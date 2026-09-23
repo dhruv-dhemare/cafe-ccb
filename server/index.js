@@ -10,6 +10,7 @@ import { createOrder, createPaymentSession, deleteMenu, finalizePaymentSession, 
 import { MENU } from './menu-data.js'
 
 const app = express()
+app.set('trust proxy', 1)
 const port = process.env.PORT || 3001
 const adminPath = process.env.ADMIN_BASE_PATH || '/private-cafe-console'
 const jwtSecret = process.env.ADMIN_SESSION_SECRET || 'development-only-change-me'
