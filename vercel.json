@@ -1,5 +1,9 @@
 {
   "rewrites": [
+    {
+      "source": "/private-cafe-console/api/:path*",
+      "destination": "https://cafe-ccb-api.onrender.com/private-cafe-console/api/:path*"
+    },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
