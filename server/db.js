@@ -4,7 +4,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
-const db = new Database(path.join(root, 'ccb.sqlite'))
+const dbPath = process.env.DATABASE_PATH || path.join(root, 'ccb.sqlite')
+const db = new Database(dbPath)
 db.pragma('journal_mode = WAL')
 db.exec(`
 CREATE TABLE IF NOT EXISTS menu_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, description TEXT, price INTEGER NOT NULL CHECK(price >= 0), available INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
