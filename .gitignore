@@ -1,0 +1,58 @@
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+
+# Build and test output
+dist/
+dist-ssr/
+coverage/
+.vite/
+.vite-temp/
+
+# Logs and temporary files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Local database files and SQLite runtime files
+server/ccb.sqlite
+server/ccb.sqlite-shm
+server/ccb.sqlite-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Editor, operating-system, and IDE files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local project snapshots and agent files
+snapshots/
+.agents/
+.codex/
