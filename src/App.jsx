@@ -770,7 +770,8 @@ function Success({ receipt, onMenu }) {
   );
 }
 function AdminApp() {
-  const adminApi = `${ADMIN_PATH}/api`;
+  const backendOrigin = API.replace(/\/api\/?$/, "");
+  const adminApi = `${import.meta.env.VITE_API_URL ? backendOrigin : ""}${ADMIN_PATH}/api`;
   const [loggedIn, setLoggedIn] = useState(false),
     [username, setUsername] = useState(""),
     [password, setPassword] = useState(""),
