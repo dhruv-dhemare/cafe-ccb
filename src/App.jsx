@@ -1,123 +1,9 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import "./App.css";
 
 const API = import.meta.env.VITE_API_URL || "/api";
 const ADMIN_PATH =
   import.meta.env.VITE_ADMIN_BASE_PATH || "/private-cafe-console";
-const FALLBACK_MENU = [
-  ["tea", "Tea", "Breakfast", 12, "A warm, comforting cup"],
-  [
-    "vada-pav",
-    "Vada Pav",
-    "Breakfast",
-    20,
-    "Mumbai-style spiced potato slider",
-  ],
-  ["upma", "Upma", "Breakfast", 25, "South Indian savoury breakfast"],
-  [
-    "bread-pattice",
-    "Bread Pattice",
-    "Breakfast",
-    20,
-    "Crisp, golden and filling",
-  ],
-  ["poha", "Poha", "Breakfast", 25, "Light, lemony and satisfying"],
-  ["appe", "Appe", "Breakfast", 30, "Soft bite-sized breakfast treats"],
-  [
-    "sabudana-khichadi",
-    "Sabudana Khichadi",
-    "Breakfast",
-    35,
-    "Classic Maharashtrian comfort food",
-  ],
-  [
-    "sabudana-vada",
-    "Sabudana Vada (3 pcs)",
-    "Breakfast",
-    60,
-    "Three crunchy tapioca fritters",
-  ],
-  [
-    "batata-vada-sambar-single",
-    "Batata Vada Sambar (Single)",
-    "Breakfast",
-    25,
-    "Potato fritter with sambar",
-  ],
-  [
-    "batata-vada-sambar-double",
-    "Batata Vada Sambar (Double)",
-    "Breakfast",
-    50,
-    "Two potato fritters with sambar",
-  ],
-  ["misal-pav", "Misal Pav", "Breakfast", 60, "Spicy sprout curry with pav"],
-  ["omelette-pav", "Omelette Pav", "Breakfast", 60, "Masala omelette with pav"],
-  [
-    "egg-bhurji",
-    "Egg Bhurji (Double Egg)",
-    "Breakfast",
-    80,
-    "Two eggs scrambled with masala",
-  ],
-  [
-    "boiled-egg",
-    "Boiled Egg (Single)",
-    "Breakfast",
-    15,
-    "Simple, protein-rich and fresh",
-  ],
-  ["extra-pav", "Extra Pav", "Breakfast", 5, "Add one more pav"],
-  [
-    "small-combo",
-    "Small Combo",
-    "Combos",
-    159,
-    "Veg burger · salted fries · hot coffee",
-  ],
-  [
-    "maggie-combo",
-    "Maggie Combo",
-    "Combos",
-    149,
-    "Vegetable maggie · cheese masala maggie · hot coffee",
-  ],
-  [
-    "cafe-special",
-    "Cafe Special",
-    "Combos",
-    199,
-    "Veg sandwich · green apple mojito · peri peri fries",
-  ],
-  [
-    "friendship-combo",
-    "Friendship Combo",
-    "Combos",
-    319,
-    "Cheese burger · virgin mojito · masala maggie · salted fries · veg cheese grilled sandwich",
-  ],
-  [
-    "family-combo",
-    "Family Combo (For 8 People)",
-    "Combos",
-    999,
-    "A generous spread for the whole table",
-  ],
-  [
-    "cheesy-combo",
-    "Cheesy Combo",
-    "Combos",
-    549,
-    "Thick coffee · corn cheese pizza · cheese toast · veg cheese momos · white cheese pasta",
-  ],
-].map(([id, name, category, price, description]) => ({
-  id,
-  name,
-  category,
-  price,
-  description,
-  available: true,
-}));
 const money = (value) => `₹${Number(value).toLocaleString("en-IN")}`;
 const loadRazorpay = () =>
   new Promise((resolve, reject) => {
@@ -147,7 +33,9 @@ const waitForPayment = async (reference) => {
   );
 };
 const getRoute = () =>
-  window.location.pathname === "/menu"
+  window.location.pathname === "/cigarettes"
+    ? "cigarettes"
+    : window.location.pathname === "/menu"
     ? "menu"
     : window.location.pathname === "/checkout"
       ? "checkout"
@@ -165,9 +53,12 @@ const readStoredReceipt = () => {
 };
 
 function App() {
-  const [menu, setMenu] = useState(FALLBACK_MENU),
+  const [menu, setMenu] = useState([]),
     [category, setCategory] = useState(
-      () => localStorage.getItem("ccb-category") || "Breakfast",
+      () => {
+        const stored = localStorage.getItem("ccb-category");
+        return stored && stored !== "Breakfast" ? stored : "Cold Beverages";
+      },
     );
   const [cart, setCart] = useState(() =>
     JSON.parse(localStorage.getItem("ccb-cart") || "[]"),
@@ -176,6 +67,8 @@ function App() {
   const [view, setView] = useState(
       initialRoute === "menu"
         ? "menu"
+        : initialRoute === "cigarettes"
+          ? "cigarettes"
         : initialRoute === "success"
           ? "success"
           : "home",
@@ -198,7 +91,13 @@ function App() {
     window.history.pushState({}, "", path);
     const route = getRoute();
     setView(
-      route === "menu" ? "menu" : route === "success" ? "success" : "home",
+      route === "menu"
+        ? "menu"
+        : route === "cigarettes"
+          ? "cigarettes"
+          : route === "success"
+            ? "success"
+            : "home",
     );
     setCheckout(route === "checkout");
     setShowCart(isCartRoute());
@@ -217,7 +116,13 @@ function App() {
     const onPopState = () => {
       const route = getRoute();
       setView(
-        route === "menu" ? "menu" : route === "success" ? "success" : "home",
+        route === "menu"
+          ? "menu"
+          : route === "cigarettes"
+            ? "cigarettes"
+            : route === "success"
+              ? "success"
+              : "home",
       );
       setCheckout(route === "checkout");
       setShowCart(isCartRoute());
@@ -242,7 +147,8 @@ function App() {
     const timer = window.setTimeout(() => setShowIntro(false), 3400);
     return () => window.clearTimeout(timer);
   }, [showIntro]);
-  const categories = [...new Set(menu.map((i) => i.category))],
+  const mainMenu = menu.filter((item) => item.category !== "Cigarettes"),
+    categories = [...new Set(mainMenu.map((i) => i.category))],
     cartCount = cart.reduce((s, i) => s + i.quantity, 0),
     total = cart.reduce((s, i) => s + i.price * i.quantity, 0);
   const updateCart = (item, delta) =>
@@ -261,6 +167,11 @@ function App() {
       return setNotice("Please enter a valid 10-digit mobile number.");
     setNotice("");
     setPaying(true);
+    const orderSource =
+      new URLSearchParams(window.location.search).get("source") ===
+      "cigarettes"
+        ? "cigarettes"
+        : "menu";
     try {
       const create = await fetch(`${API}/payment/create-order`, {
         method: "POST",
@@ -273,6 +184,14 @@ function App() {
       const paymentOrder = await create.json();
       if (!create.ok)
         throw Error(paymentOrder.error || "Unable to start payment");
+      if (paymentOrder.paymentMethod === "KHATTA") {
+        sessionStorage.setItem("ccb-receipt", JSON.stringify(paymentOrder));
+        setReceipt(paymentOrder);
+        setCart([]);
+        setPaying(false);
+        navigate(`/success?source=${orderSource}`);
+        return;
+      }
       await loadRazorpay();
       const options = {
         key: paymentOrder.keyId,
@@ -301,7 +220,7 @@ function App() {
             sessionStorage.setItem("ccb-receipt", JSON.stringify(data));
             setReceipt(data);
             setCart([]);
-            navigate("/success");
+            navigate(`/success?source=${orderSource}`);
           } catch (error) {
             setNotice(error.message);
           } finally {
@@ -331,7 +250,19 @@ function App() {
   };
   if (window.location.pathname.startsWith(ADMIN_PATH)) return <AdminApp />;
   if (view === "success" && receipt)
-    return <Success receipt={receipt} onMenu={() => navigate("/menu")} />;
+    return (
+      <Success
+        receipt={receipt}
+        onMenu={() =>
+          navigate(
+            new URLSearchParams(window.location.search).get("source") ===
+              "cigarettes"
+              ? "/cigarettes"
+              : "/menu",
+          )
+        }
+      />
+    );
   if (checkout)
     return (
       <Checkout
@@ -340,7 +271,14 @@ function App() {
         phone={phone}
         setPhone={setPhone}
         onSubmit={placeOrder}
-        onBack={() => navigate("/menu?cart=1")}
+        onBack={() =>
+          navigate(
+            new URLSearchParams(window.location.search).get("source") ===
+              "cigarettes"
+              ? "/cigarettes?cart=1"
+              : "/menu?cart=1",
+          )
+        }
         notice={notice}
         paying={paying}
       />
@@ -362,14 +300,7 @@ function App() {
         </button>
         <nav>
           <button onClick={() => navigate("/")}>Home</button>
-          <button
-            onClick={() => {
-              setCategory("Breakfast");
-              navigate("/menu");
-            }}
-          >
-            Menu
-          </button>
+          {view !== "cigarettes" && <button onClick={() => navigate("/menu")}>Menu</button>}
           {view !== "home" && (
             <button className="outline-btn" onClick={openCart}>
               Cart <span>{cartCount}</span>
@@ -387,8 +318,8 @@ function App() {
                 <em>late-night cravings.</em>
               </h1>
               <p className="hero-text">
-                A cozy neighbourhood café serving warm breakfasts, comfort food,
-                cold coffees and good conversations.
+                A cozy neighbourhood café serving comfort food, cold coffees and
+                good conversations.
               </p>
               <div className="hero-actions">
                 <button className="gold-btn" onClick={() => navigate("/menu")}>
@@ -442,9 +373,9 @@ function App() {
               <MoodCard
                 icon="☕"
                 title="Start slow"
-                text="Chai, coffee & breakfast"
+                text="Chai, coffee & cold beverages"
                 onClick={() => {
-                  setCategory("Breakfast");
+                  setCategory("Cold Beverages");
                   navigate("/menu");
                 }}
               />
@@ -466,9 +397,15 @@ function App() {
             </div>
           </section>
         </main>
+      ) : view === "cigarettes" ? (
+        <CigarettesMenu
+          menu={menu}
+          updateCart={updateCart}
+          cart={cart}
+        />
       ) : (
         <Menu
-          menu={menu}
+          menu={mainMenu}
           category={category}
           categories={categories}
           setCategory={setCategory}
@@ -492,7 +429,9 @@ function App() {
           total={total}
           updateCart={updateCart}
           onClose={closeCart}
-          onCheckout={() => navigate("/checkout")}
+          onCheckout={() =>
+            navigate(view === "cigarettes" ? "/checkout?source=cigarettes" : "/checkout")
+          }
         />
       )}
       <footer>
@@ -601,6 +540,69 @@ function Menu({ menu, category, categories, setCategory, updateCart, cart }) {
             );
           })}
       </div>
+    </main>
+  );
+}
+function CigarettesMenu({ menu, updateCart, cart }) {
+  const [search, setSearch] = useState("");
+  const cigaretteMenu = menu.filter((item) => item.category === "Cigarettes");
+  const visibleMenu = cigaretteMenu.filter((item) =>
+    item.name.toLowerCase().includes(search.trim().toLowerCase()),
+  );
+  return (
+    <main className="menu-page cigarettes-page">
+      <div className="menu-intro">
+        <div>
+          <p className="eyebrow">PRIVATE CIGARETTE MENU</p>
+          <h1>
+            Choose your
+            <br />
+            <em>pack-up.</em>
+          </h1>
+        </div>
+        <p>Available individually. Add your selection to the cart and pay securely online.</p>
+      </div>
+      <label className="cigarette-search">
+        <span>Find a cigarette</span>
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search by name"
+          aria-label="Search cigarettes"
+        />
+      </label>
+      <div className="menu-grid">
+        {visibleMenu.map((item) => {
+          const qty = cart.find((cartItem) => cartItem.id === item.id)?.quantity || 0;
+          return (
+            <article className="menu-item compact-item" key={item.id}>
+              <div>
+                <p className="item-category">Cigarettes</p>
+                <h3>{item.name}</h3>
+                <p>{item.description}</p>
+              </div>
+              <div className="item-buy">
+                <strong>{money(item.price)}</strong>
+                {qty ? (
+                  <div className="quantity">
+                    <button onClick={() => updateCart(item, -1)}>−</button>
+                    <b>{qty}</b>
+                    <button onClick={() => updateCart(item, 1)}>+</button>
+                  </div>
+                ) : (
+                  <button className="add-btn" onClick={() => updateCart(item, 1)}>
+                    Add <span>+</span>
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      {!visibleMenu.length && (
+        <p className="empty-state">No cigarettes match your search.</p>
+      )}
     </main>
   );
 }
@@ -730,11 +732,12 @@ function Checkout({
   );
 }
 function Success({ receipt, onMenu }) {
+  const khattaOrder = receipt.paymentStatus === "KHATTA";
   return (
     <div className="success-page">
       <div className="success-card">
         <div className="success-icon">✓</div>
-        <p className="eyebrow">PAYMENT SUCCESSFUL</p>
+        <p className="eyebrow">{khattaOrder ? "ORDER CONFIRMED" : "PAYMENT SUCCESSFUL"}</p>
         <h1>
           Thank you for
           <br />
@@ -748,7 +751,7 @@ function Success({ receipt, onMenu }) {
             ORDER <b>{receipt.orderNumber}</b>
           </span>
           <span>
-            AMOUNT PAID <b>{money(receipt.total)}</b>
+            {khattaOrder ? "ORDER TOTAL" : "AMOUNT PAID"} <b>{money(receipt.total)}</b>
           </span>
           <span>
             MOBILE <b>+91 {receipt.phone}</b>
@@ -769,8 +772,17 @@ function Success({ receipt, onMenu }) {
     </div>
   );
 }
+const ADMIN_ROUTES = ["order", "menu", "khatta"];
+const readAdminRoute = () => {
+  const route = window.location.pathname
+    .slice(ADMIN_PATH.length)
+    .replace(/^\/+|\/+$/g, "");
+  return ADMIN_ROUTES.includes(route) ? route : "order";
+};
+
 function AdminApp() {
   const adminApi = `${ADMIN_PATH}/api`;
+  const [adminRoute, setAdminRoute] = useState(readAdminRoute);
   const [loggedIn, setLoggedIn] = useState(false),
     [username, setUsername] = useState(""),
     [password, setPassword] = useState(""),
@@ -780,24 +792,69 @@ function AdminApp() {
     [form, setForm] = useState({
       id: "",
       name: "",
-      category: "Breakfast",
+      category: "",
       description: "",
       price: "",
     }),
     [message, setMessage] = useState(""),
     [editingId, setEditingId] = useState(null),
-    [statusSaving, setStatusSaving] = useState(null);
-  const load = async () => {
-    const [o, m] = await Promise.all([
-      fetch(`${adminApi}/orders`, { credentials: "include" }),
-      fetch(`${adminApi}/menu`, { credentials: "include" }),
-    ]);
-    if (o.ok) {
-      setOrders(await o.json());
-      setLoggedIn(true);
+    [statusSaving, setStatusSaving] = useState(null),
+    [khattaUsers, setKhattaUsers] = useState([]),
+    [khattaForm, setKhattaForm] = useState({ name: "", phone: "" }),
+    [khattaSearch, setKhattaSearch] = useState(""),
+    [khattaMessage, setKhattaMessage] = useState(""),
+    [khattaBusy, setKhattaBusy] = useState(null);
+  useEffect(() => {
+    const rawRoute = window.location.pathname
+      .slice(ADMIN_PATH.length)
+      .replace(/^\/+|\/+$/g, "");
+    if (window.location.pathname === ADMIN_PATH || !ADMIN_ROUTES.includes(rawRoute)) {
+      window.history.replaceState({}, "", `${ADMIN_PATH}/order`);
     }
-    if (m.ok) setMenu(await m.json());
+    const onPopState = () => setAdminRoute(readAdminRoute());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  const navigateAdmin = (route) => {
+    window.history.pushState({}, "", `${ADMIN_PATH}/${route}`);
+    setAdminRoute(route);
+    window.scrollTo(0, 0);
   };
+  const load = useCallback(async () => {
+    try {
+      const ordersResponse = await fetch(`${adminApi}/orders`, {
+        credentials: "include",
+      });
+      if (!ordersResponse.ok) {
+        if (ordersResponse.status === 401) setLoggedIn(false);
+        return;
+      }
+      setOrders(await ordersResponse.json());
+      setLoggedIn(true);
+      const menuResponse = await fetch(`${adminApi}/menu`, {
+        credentials: "include",
+      });
+      if (menuResponse.ok) setMenu(await menuResponse.json());
+      const khattaResponse = await fetch(`${adminApi}/khatta/users`, {
+        credentials: "include",
+      });
+      if (khattaResponse.ok) setKhattaUsers(await khattaResponse.json());
+    } catch {
+      setError("Unable to connect to the admin server");
+    }
+  }, [adminApi]);
+  useEffect(() => {
+    const timer = window.setTimeout(load, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+  useEffect(() => {
+    if (!loggedIn) return undefined;
+    const stream = new EventSource(`${adminApi}/orders/stream`, {
+      withCredentials: true,
+    });
+    stream.addEventListener("order-created", load);
+    return () => stream.close();
+  }, [adminApi, load, loggedIn]);
   const login = async (e) => {
     e.preventDefault();
     const r = await fetch(`${adminApi}/login`, {
@@ -826,7 +883,7 @@ function AdminApp() {
       setForm({
         id: "",
         name: "",
-        category: "Breakfast",
+        category: "",
         description: "",
         price: "",
       });
@@ -852,7 +909,7 @@ function AdminApp() {
         setForm({
           id: "",
           name: "",
-          category: "Breakfast",
+          category: "Cold Beverages",
           description: "",
           price: "",
         });
@@ -876,6 +933,83 @@ function AdminApp() {
       );
     }
     setStatusSaving(null);
+  };
+  const saveKhattaUser = async (e) => {
+    e.preventDefault();
+    setKhattaMessage("");
+    const response = await fetch(`${adminApi}/khatta/users`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(khattaForm),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setKhattaMessage(data.error || "Could not create Khatta customer");
+      return;
+    }
+    setKhattaForm({ name: "", phone: "" });
+    setKhattaMessage("Khatta customer created");
+    load();
+  };
+  const settleKhatta = async (user) => {
+    setKhattaBusy(user.id);
+    setKhattaMessage("");
+    try {
+      const statementResponse = await fetch(
+        `${adminApi}/khatta/users/${user.id}/statement`,
+        { credentials: "include" },
+      );
+      const statement = await statementResponse.json();
+      if (!statementResponse.ok)
+        throw new Error(statement.error || "Could not create statement");
+      const csvCell = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+      const rows = [
+        ["Customer", statement.user.name],
+        ["Mobile", statement.user.phone],
+        ["Total", statement.total],
+        [],
+        ["Order", "Date", "Items", "Amount"],
+        ...statement.entries.map((entry) => [
+          entry.order_number,
+          new Date(entry.created_at).toLocaleString("en-IN"),
+          entry.items
+            .map((item) => `${item.quantity} x ${item.itemName}`)
+            .join("; "),
+          entry.amount,
+        ]),
+      ];
+      const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+      link.download = `khatta-${statement.user.phone}-${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      if (!window.confirm("The statement was downloaded. Clear this Khatta balance now?")) return;
+      const password = window.prompt("Re-enter the admin password to clear this Khatta balance:");
+      if (!password) return;
+      const settleResponse = await fetch(
+        `${adminApi}/khatta/users/${user.id}/settle`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            password,
+            settlementToken: statement.settlementToken,
+            downloadConfirmed: true,
+          }),
+        },
+      );
+      const result = await settleResponse.json().catch(() => ({}));
+      if (!settleResponse.ok) throw new Error(result.error || "Could not clear Khatta balance");
+      setKhattaMessage(`${user.name}'s Khatta balance was cleared`);
+      load();
+    } catch (settleError) {
+      setKhattaMessage(settleError.message);
+    } finally {
+      setKhattaBusy(null);
+    }
   };
   if (!loggedIn)
     return (
@@ -926,6 +1060,10 @@ function AdminApp() {
       (o) => new Date(o.createdAt).toDateString() === new Date().toDateString(),
     ),
     sales = today.reduce((s, o) => s + o.total, 0);
+  const visibleKhattaUsers = khattaUsers.filter((user) => {
+    const query = khattaSearch.trim().toLowerCase();
+    return !query || user.name.toLowerCase().includes(query) || user.phone.includes(query);
+  });
   return (
     <div className="admin-shell">
       <header className="admin-header">
@@ -940,6 +1078,11 @@ function AdminApp() {
             <strong>3.0 / STAFF</strong>
           </span>
         </div>
+        <nav className="admin-nav" aria-label="Admin sections">
+          <button className={adminRoute === "order" ? "active" : ""} onClick={() => navigateAdmin("order")}>Orders</button>
+          <button className={adminRoute === "menu" ? "active" : ""} onClick={() => navigateAdmin("menu")}>Menu</button>
+          <button className={adminRoute === "khatta" ? "active" : ""} onClick={() => navigateAdmin("khatta")}>Khatta</button>
+        </nav>
         <button
           className="text-btn"
           onClick={async () => {
@@ -971,6 +1114,8 @@ function AdminApp() {
             })}
           </span>
         </div>
+        {adminRoute === "order" && (
+          <>
         <section className="admin-section recent-section">
           <div className="admin-section-head">
             <div>
@@ -1091,6 +1236,59 @@ function AdminApp() {
             )}
           </div>
         </section>
+          </>
+        )}
+        {adminRoute === "khatta" && (
+          <section className="admin-section khatta-section">
+          <div className="admin-section-head">
+            <div>
+              <p className="eyebrow">PRIVATE CREDIT LEDGER</p>
+              <h2>Khatta customers</h2>
+            </div>
+            <span className="active-count">{khattaUsers.length} active</span>
+          </div>
+          <label className="khatta-search">
+            Search customer
+            <input
+              value={khattaSearch}
+              onChange={(e) => setKhattaSearch(e.target.value)}
+              placeholder="Name or mobile number"
+            />
+          </label>
+          <form className="khatta-form" onSubmit={saveKhattaUser}>
+            <input
+              placeholder="Customer name"
+              value={khattaForm.name}
+              onChange={(e) => setKhattaForm({ ...khattaForm, name: e.target.value })}
+              required
+            />
+            <input
+              placeholder="10-digit mobile number"
+              value={khattaForm.phone}
+              onChange={(e) => setKhattaForm({ ...khattaForm, phone: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+              inputMode="numeric"
+              required
+            />
+            <button className="gold-btn" type="submit">Add customer <span>+</span></button>
+          </form>
+          {khattaMessage && <p className="form-success">{khattaMessage}</p>}
+          <div className="khatta-list">
+            {visibleKhattaUsers.length ? visibleKhattaUsers.map((user) => (
+              <div className="khatta-row" key={user.id}>
+                <div>
+                  <b>{user.name}</b>
+                  <small>+91 {user.phone} · {user.entry_count} open order{Number(user.entry_count) === 1 ? "" : "s"}</small>
+                </div>
+                <strong>{money(user.balance)}</strong>
+                <button className="settle-btn" type="button" onClick={() => settleKhatta(user)} disabled={khattaBusy === user.id || Number(user.balance) === 0}>
+                  {khattaBusy === user.id ? "Preparing…" : "Download & settle"}
+                </button>
+              </div>
+            )) : <p className="empty-state">{khattaUsers.length ? "No matching customers." : "No Khatta customers yet."}</p>}
+          </div>
+        </section>
+        )}
+        {adminRoute === "menu" && (
         <section className="admin-section menu-editor">
           <div className="admin-section-head">
             <div>
@@ -1106,7 +1304,7 @@ function AdminApp() {
                   setForm({
                     id: "",
                     name: "",
-                    category: "Breakfast",
+                    category: "Cold Beverages",
                     description: "",
                     price: "",
                   });
@@ -1192,6 +1390,7 @@ function AdminApp() {
             {menu.length} dishes currently live in the menu.
           </p>
         </section>
+        )}
       </main>
     </div>
   );

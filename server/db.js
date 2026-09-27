@@ -12,12 +12,15 @@ CREATE TABLE IF NOT EXISTS menu_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, order_number TEXT UNIQUE NOT NULL, reference TEXT UNIQUE NOT NULL, phone TEXT NOT NULL, items_json TEXT NOT NULL, subtotal INTEGER NOT NULL, total INTEGER NOT NULL, payment_status TEXT NOT NULL, sms_status TEXT NOT NULL, order_status TEXT NOT NULL DEFAULT 'PAID', razorpay_order_id TEXT, razorpay_payment_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS payment_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, reference TEXT UNIQUE NOT NULL, phone TEXT NOT NULL, items_json TEXT NOT NULL, subtotal INTEGER NOT NULL, total INTEGER NOT NULL, currency TEXT NOT NULL, status TEXT NOT NULL, razorpay_order_id TEXT UNIQUE NOT NULL, razorpay_payment_id TEXT UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS webhook_events (event_id TEXT PRIMARY KEY, event_name TEXT NOT NULL, received_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS khatta_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS khatta_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, khatta_user_id INTEGER NOT NULL REFERENCES khatta_users(id) ON DELETE CASCADE, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE RESTRICT, amount INTEGER NOT NULL CHECK(amount >= 0), items_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(order_id));
 `)
+db.prepare("DELETE FROM menu_items WHERE category = ?").run('Breakfast')
 try { db.exec("ALTER TABLE orders ADD COLUMN order_status TEXT NOT NULL DEFAULT 'PAID'") } catch { /* Existing databases already have the column. */ }
+try { db.exec("ALTER TABLE orders ADD COLUMN khatta_user_id INTEGER") } catch { /* Existing databases already have the column. */ }
 
 export const seedMenu = (items) => {
-  if (db.prepare('SELECT COUNT(*) count FROM menu_items').get().count) return
-  const insert = db.prepare('INSERT INTO menu_items (id,name,category,description,price,available,created_at,updated_at) VALUES (@id,@name,@category,@description,@price,@available,@now,@now)')
+  const insert = db.prepare('INSERT OR IGNORE INTO menu_items (id,name,category,description,price,available,created_at,updated_at) VALUES (@id,@name,@category,@description,@price,@available,@now,@now)')
   const now = new Date().toISOString()
   db.transaction(() => items.forEach(item => insert.run({ ...item, available: 1, now })))()
 }
@@ -45,6 +48,22 @@ export const finalizePaymentSession = (session, payment) => {
   const id = tx()
   return parseOrder(db.prepare('SELECT * FROM orders WHERE id = ?').get(id))
 }
+export const findKhattaUserByPhone = (phone) => db.prepare('SELECT id,name,phone,active FROM khatta_users WHERE phone = ? AND active = 1').get(phone) || null
+export const createKhattaOrder = ({ khattaUserId, reference, phone, itemsJson, subtotal, total }) => {
+  const now = new Date().toISOString()
+  const tx = db.transaction(() => {
+    const count = db.prepare('SELECT COUNT(*) count FROM orders').get().count
+    const orderNumber = `CCB-${String(count + 1).padStart(3, '0')}`
+    const result = db.prepare("INSERT INTO orders (order_number,reference,phone,items_json,subtotal,total,payment_status,sms_status,order_status,khatta_user_id,created_at,updated_at) VALUES (@orderNumber,@reference,@phone,@itemsJson,@subtotal,@total,'KHATTA','NOT_REQUIRED','PAID',@khattaUserId,@now,@now)").run({ orderNumber, reference, phone, itemsJson, subtotal, total, khattaUserId, now })
+    db.prepare('INSERT INTO khatta_entries (khatta_user_id,order_id,amount,items_json,created_at) VALUES (?,?,?,?,?)').run(khattaUserId, result.lastInsertRowid, total, itemsJson, now)
+    return result.lastInsertRowid
+  })
+  return parseOrder(db.prepare('SELECT * FROM orders WHERE id = ?').get(tx()))
+}
+export const createKhattaUser = ({ name, phone }) => { const now = new Date().toISOString(); const result = db.prepare('INSERT INTO khatta_users (name,phone,active,created_at,updated_at) VALUES (?,?,1,?,?)').run(name, phone, now, now); return db.prepare('SELECT id,name,phone,active,created_at,updated_at FROM khatta_users WHERE id = ?').get(result.lastInsertRowid) }
+export const listKhattaUsers = () => db.prepare('SELECT u.id,u.name,u.phone,u.active,u.created_at,u.updated_at,COALESCE(SUM(e.amount),0) AS balance,COUNT(e.id) AS entry_count FROM khatta_users u LEFT JOIN khatta_entries e ON e.khatta_user_id = u.id WHERE u.active = 1 GROUP BY u.id ORDER BY u.name').all()
+export const getKhattaStatement = (userId) => { const user = db.prepare('SELECT id,name,phone,active FROM khatta_users WHERE id = ? AND active = 1').get(userId); if (!user) return null; const entries = db.prepare('SELECT e.id,e.order_id,o.order_number,o.reference,e.amount,e.items_json,e.created_at FROM khatta_entries e JOIN orders o ON o.id = e.order_id WHERE e.khatta_user_id = ? ORDER BY e.created_at,e.id').all(userId).map(entry => ({ ...entry, items:JSON.parse(entry.items_json) })); return { user, entries, total:entries.reduce((sum, entry) => sum + Number(entry.amount), 0) } }
+export const settleKhattaUser = (userId, entryIds) => { const statement = getKhattaStatement(userId); if (!statement) return null; const selectedIds = new Set(entryIds.map(Number)); const entries = statement.entries.filter(entry => selectedIds.has(Number(entry.id))); if (selectedIds.size) db.prepare(`DELETE FROM khatta_entries WHERE khatta_user_id = ? AND id IN (${[...selectedIds].map(() => '?').join(',')})`).run(userId, ...selectedIds); return { ...statement, entries, total:entries.reduce((sum, entry) => sum + Number(entry.amount), 0) } }
 export const hasWebhookEvent = (eventId) => Boolean(db.prepare('SELECT event_id FROM webhook_events WHERE event_id = ?').get(eventId))
 export const recordWebhookEvent = (eventId, eventName) => db.prepare('INSERT OR IGNORE INTO webhook_events (event_id,event_name,received_at) VALUES (?,?,?)').run(eventId, eventName, new Date().toISOString()).changes > 0
 export const createOrder = (order) => { const now = new Date().toISOString(); const result = db.prepare(`INSERT INTO orders (order_number,reference,phone,items_json,subtotal,total,payment_status,sms_status,order_status,razorpay_order_id,razorpay_payment_id,created_at,updated_at) VALUES (@orderNumber,@reference,@phone,@itemsJson,@subtotal,@total,@paymentStatus,@smsStatus,@orderStatus,@razorpayOrderId,@razorpayPaymentId,@now,@now)`).run({ orderStatus:'PAID', ...order, now }); return { ...order, id: result.lastInsertRowid, createdAt: now } }

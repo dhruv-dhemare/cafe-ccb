@@ -9,14 +9,16 @@
   "scripts": {
     "dev": "vite",
     "server": "node server/index.js",
+    "migrate:sqlite-to-postgres": "node server/migrate-sqlite-to-postgres.js",
+    "migrate:sqlite-to-postgres": "node server/migrate-sqlite-to-postgres.js",
     "dev:full": "concurrently \"vite\" \"node server/index.js\"",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1",
     "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^11.8.1",
     "concurrently": "^9.1.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -24,6 +26,7 @@
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
     "jsonwebtoken": "^9.0.2",
+    "pg": "^8.23.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
