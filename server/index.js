@@ -64,6 +64,23 @@ const adminLimiter = rateLimit({ windowMs:15 * 60 * 1000, limit:30, standardHead
 const adminCookieOptions = { httpOnly:true, sameSite:process.env.NODE_ENV==='production' ? 'none' : 'strict', secure:process.env.NODE_ENV==='production', maxAge:20*60*60*1000, path:adminPath }
 const adminOrderStreams = new Set()
 const khattaSettlementTokens = new Map()
+const MENU_CACHE_TTL = 2 * 60 * 1000
+let menuCache = { items:null, etag:null, expiresAt:0 }
+const getCachedMenu = async () => {
+  if (menuCache.items && menuCache.expiresAt > Date.now()) return menuCache
+  const items = await listMenu()
+  const etag = `"${crypto.createHash('sha256').update(JSON.stringify(items)).digest('hex')}"`
+  menuCache = { items, etag, expiresAt:Date.now() + MENU_CACHE_TTL }
+  return menuCache
+}
+const invalidateMenuCache = () => { menuCache = { items:null, etag:null, expiresAt:0 } }
+const sendMenuResponse = async (req, res, cacheControl) => {
+  const cached = await getCachedMenu()
+  res.set('Cache-Control', cacheControl)
+  res.set('ETag', cached.etag)
+  if (req.get('If-None-Match') === cached.etag) return res.status(304).end()
+  return res.json(cached.items)
+}
 const auth = (req,res,next) => { try { jwt.verify(req.cookies.ccb_admin, jwtSecret); next() } catch { res.status(401).json({ error:'Admin authentication required' }) } }
 const adminPasswordHash = () => process.env.ADMIN_PASSWORD_HASH || bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'change-me', 10)
 const verifyAdminPassword = password => bcrypt.compare(password || '', adminPasswordHash())
@@ -101,7 +118,7 @@ const razorpayRequest = async (path, options = {}) => {
 const sendOrderConfirmation = (order) => { if (!order) return; const message = `Cafe Coffee Bar 3.0 order ${order.order_number} confirmed. Amount paid ₹${order.total}. Receipt reference: ${order.reference}`; if (process.env.SMS_PROVIDER === 'mock' || !process.env.SMS_PROVIDER) console.log(`[mock-sms] ${message}`); else console.log('[sms] Provider adapter pending configuration') }
 
 app.get('/api/health', (req,res) => res.json({ ok:true, service:'ccb-api', razorpayConfigured:razorpayConfigured() }))
-app.get('/api/menu', async (req,res) => res.json(await listMenu()))
+app.get('/api/menu', async (req,res) => sendMenuResponse(req, res, 'public, max-age=120, stale-while-revalidate=60'))
 app.post('/api/payment/options', async (req,res) => {
   try {
     const cart = await validateCart(req.body.phone, req.body.items, req.body.tableNumber)
@@ -202,8 +219,8 @@ app.post(`${adminPath}/api/khatta/users/:id/settle`, auth, async (req,res) => {
   khattaSettlementTokens.delete(req.body.settlementToken)
   res.json({ ok:true, total:statement.total, entries:statement.entries.length })
 })
-app.get(`${adminPath}/api/menu`, auth, async (req,res) => res.json(await listMenu()))
-app.post(`${adminPath}/api/menu`, auth, async (req,res) => { const { id,name,category,description='',price,available=true }=req.body; if(!id||!name||!category||!Number.isInteger(Number(price))||Number(price)<0)return res.status(400).json({error:'id, name, category and a valid price are required'}); res.status(201).json(await upsertMenu({id,name,category,description,price:Number(price),available})) })
-app.delete(`${adminPath}/api/menu/:id`, auth, async (req,res) => res.json({ deleted:await deleteMenu(req.params.id) }))
+app.get(`${adminPath}/api/menu`, auth, async (req,res) => sendMenuResponse(req, res, 'private, no-cache'))
+app.post(`${adminPath}/api/menu`, auth, async (req,res) => { const { id,name,category,description='',price,available=true }=req.body; if(!id||!name||!category||!Number.isInteger(Number(price))||Number(price)<0)return res.status(400).json({error:'id, name, category and a valid price are required'}); const item=await upsertMenu({id,name,category,description,price:Number(price),available}); invalidateMenuCache(); res.status(201).json(item) })
+app.delete(`${adminPath}/api/menu/:id`, auth, async (req,res) => { const deleted=await deleteMenu(req.params.id); invalidateMenuCache(); res.json({ deleted }) })
 
 app.listen(port, () => console.log(`CCB Express API listening on http://localhost:${port}`))

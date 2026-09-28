@@ -4,6 +4,55 @@ import "./App.css";
 const API = import.meta.env.VITE_API_URL || "/api";
 const ADMIN_PATH =
   import.meta.env.VITE_ADMIN_BASE_PATH || "/private-cafe-console";
+const MENU_CACHE_KEY = "ccb-menu-cache-v2";
+const MENU_CACHE_INVALIDATION_KEY = "ccb-menu-cache-invalidated";
+const MENU_CACHE_TTL = 2 * 60 * 1000;
+const readMenuCache = () => {
+  try {
+    const cached = JSON.parse(localStorage.getItem(MENU_CACHE_KEY) || "null");
+    return cached && Array.isArray(cached.items) ? cached : null;
+  } catch {
+    return null;
+  }
+};
+const writeMenuCache = (items, etag) => {
+  try {
+    localStorage.setItem(
+      MENU_CACHE_KEY,
+      JSON.stringify({
+        items,
+        etag: etag || null,
+        expiresAt: Date.now() + MENU_CACHE_TTL,
+      }),
+    );
+  } catch {
+    // Menu loading still works when browser storage is unavailable or full.
+  }
+};
+const invalidateMenuCache = () => {
+  try {
+    localStorage.removeItem(MENU_CACHE_KEY);
+    localStorage.setItem(MENU_CACHE_INVALIDATION_KEY, String(Date.now()));
+  } catch {
+    // The server cache is still invalidated by the admin API.
+  }
+};
+const loadCachedMenu = async ({ force = false } = {}) => {
+  const cached = readMenuCache();
+  if (!force && cached && cached.expiresAt > Date.now()) return cached.items;
+  const response = await fetch(`${API}/menu`, {
+    cache: "no-cache",
+    headers: cached?.etag ? { "If-None-Match": cached.etag } : undefined,
+  });
+  if (response.status === 304 && cached) {
+    writeMenuCache(cached.items, cached.etag);
+    return cached.items;
+  }
+  if (!response.ok) throw new Error("Menu unavailable");
+  const items = await response.json();
+  writeMenuCache(items, response.headers.get("ETag"));
+  return items;
+};
 const money = (value) => `₹${Number(value).toLocaleString("en-IN")}`;
 const loadRazorpay = () =>
   new Promise((resolve, reject) => {
@@ -51,6 +100,9 @@ const readStoredReceipt = () => {
     return null;
   }
 };
+function Spinner({ className = "" }) {
+  return <span className={`loading-spinner ${className}`} aria-hidden="true" />;
+}
 
 function App() {
   const [menu, setMenu] = useState([]),
@@ -80,8 +132,10 @@ function App() {
     [notice, setNotice] = useState(""),
     [receipt, setReceipt] = useState(readStoredReceipt),
     [paying, setPaying] = useState(false),
+    [paymentStage, setPaymentStage] = useState(""),
     [paymentOptions, setPaymentOptions] = useState(null),
     [paymentMethod, setPaymentMethod] = useState("");
+  const [menuLoading, setMenuLoading] = useState(true);
   const [showIntro, setShowIntro] = useState(
     !window.location.pathname.startsWith(ADMIN_PATH),
   );
@@ -137,10 +191,18 @@ function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   useEffect(() => {
-    fetch(`${API}/menu`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
+    loadCachedMenu()
       .then(setMenu)
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setMenuLoading(false));
+  }, []);
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event.key !== MENU_CACHE_INVALIDATION_KEY) return;
+      loadCachedMenu({ force: true }).then(setMenu).catch(() => {});
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
   useEffect(
     () => localStorage.setItem("ccb-cart", JSON.stringify(cart)),
@@ -186,6 +248,7 @@ function App() {
     if (!paymentOptions) {
       setNotice("");
       setPaying(true);
+      setPaymentStage("checking-khatta");
       try {
         const optionsResponse = await fetch(`${API}/payment/options`, {
           method: "POST",
@@ -203,6 +266,7 @@ function App() {
         setNotice(error.message);
       } finally {
         setPaying(false);
+        setPaymentStage("");
       }
       return;
     }
@@ -211,6 +275,7 @@ function App() {
     }
     setNotice("");
     setPaying(true);
+    setPaymentStage("creating-order");
     const orderSource =
       new URLSearchParams(window.location.search).get("source") ===
       "cigarettes"
@@ -238,9 +303,11 @@ function App() {
         setPaymentOptions(null);
         setPaymentMethod("");
         setPaying(false);
+        setPaymentStage("");
         navigate(`/success?source=${orderSource}`);
         return;
       }
+      setPaymentStage("opening-payment");
       await loadRazorpay();
       const options = {
         key: paymentOrder.keyId,
@@ -253,6 +320,7 @@ function App() {
         theme: { color: "#10264a" },
         handler: async (response) => {
           try {
+            setPaymentStage("confirming-payment");
             const verify = await fetch(`${API}/payment/verify`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -275,12 +343,14 @@ function App() {
             setNotice(error.message);
           } finally {
             setPaying(false);
+            setPaymentStage("");
           }
         },
         modal: {
           ondismiss: () => {
             setNotice("Payment cancelled. Your cart is still saved.");
             setPaying(false);
+            setPaymentStage("");
           },
         },
       };
@@ -291,11 +361,13 @@ function App() {
             "Payment could not be completed. Your cart is still saved.",
         );
         setPaying(false);
+        setPaymentStage("");
       });
       razorpay.open();
     } catch (error) {
       setNotice(error.message);
       setPaying(false);
+      setPaymentStage("");
     }
   };
   if (window.location.pathname.startsWith(ADMIN_PATH)) return <AdminApp />;
@@ -337,6 +409,7 @@ function App() {
         }
         notice={notice}
         paying={paying}
+        paymentStage={paymentStage}
       />
     );
   return (
@@ -456,12 +529,14 @@ function App() {
       ) : view === "cigarettes" ? (
         <CigarettesMenu
           menu={menu}
+          loading={menuLoading}
           updateCart={updateCart}
           cart={cart}
         />
       ) : (
         <Menu
           menu={mainMenu}
+          loading={menuLoading}
           category={category}
           categories={categories}
           setCategory={setCategory}
@@ -526,10 +601,18 @@ function MoodCard({ icon, title, text, onClick }) {
     </button>
   );
 }
-function Menu({ menu, category, categories, setCategory, updateCart, cart }) {
+function Menu({ menu, loading, category, categories, setCategory, updateCart, cart }) {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [category]);
+  if (loading) {
+    return (
+      <main className="menu-page menu-loading" role="status">
+        <Spinner className="large-spinner" />
+        <p>Loading the menu…</p>
+      </main>
+    );
+  }
   return (
     <main className={`menu-page ${category === "Combos" ? "combos-page" : ""}`}>
       <div className="menu-intro">
@@ -599,12 +682,20 @@ function Menu({ menu, category, categories, setCategory, updateCart, cart }) {
     </main>
   );
 }
-function CigarettesMenu({ menu, updateCart, cart }) {
+function CigarettesMenu({ menu, loading, updateCart, cart }) {
   const [search, setSearch] = useState("");
   const cigaretteMenu = menu.filter((item) => item.category === "Cigarettes");
   const visibleMenu = cigaretteMenu.filter((item) =>
     item.name.toLowerCase().includes(search.trim().toLowerCase()),
   );
+  if (loading) {
+    return (
+      <main className="menu-page menu-loading" role="status">
+        <Spinner className="large-spinner" />
+        <p>Loading the cigarette menu…</p>
+      </main>
+    );
+  }
   return (
     <main className="menu-page cigarettes-page">
       <div className="menu-intro">
@@ -720,6 +811,7 @@ function Checkout({
   onBack,
   notice,
   paying,
+  paymentStage,
 }) {
   return (
     <div className="checkout-page">
@@ -775,6 +867,11 @@ function Checkout({
               required
             />
           </div>
+          {paying && paymentStage === "checking-khatta" && (
+            <p className="field-loading" role="status">
+              <Spinner /> Checking your payment options…
+            </p>
+          )}
           {requiresTable && (
             <>
               <label htmlFor="table-number">Table number</label>
@@ -794,11 +891,11 @@ function Checkout({
               <p className="eyebrow">PAYMENT METHOD</p>
               {paymentOptions.khattaEligible && !paymentMethod && (
                 <div className="payment-choice-grid">
-                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("KHATTA")}>
+                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("KHATTA")} disabled={paying}>
                     <b>Put in Khatta</b>
                     <small>Settle with the owner later</small>
                   </button>
-                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("PAY_NOW")}>
+                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("PAY_NOW")} disabled={paying}>
                     <b>Pay right now</b>
                     <small>Choose cash or online</small>
                   </button>
@@ -807,15 +904,15 @@ function Checkout({
               {(!paymentOptions.khattaEligible || paymentMethod === "PAY_NOW") && (
                 <div className="payment-choice-grid">
                   {paymentOptions.khattaEligible && (
-                    <button type="button" className="payment-back" onClick={() => setPaymentMethod("")}>
+                    <button type="button" className="payment-back" onClick={() => setPaymentMethod("")} disabled={paying}>
                       ← Back
                     </button>
                   )}
-                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("CASH")}>
+                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("CASH")} disabled={paying}>
                     <b>Pay with cash</b>
                     <small>Pay at the counter</small>
                   </button>
-                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("ONLINE")}>
+                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("ONLINE")} disabled={paying}>
                     <b>Pay online</b>
                     <small>Secure Razorpay payment</small>
                   </button>
@@ -824,26 +921,45 @@ function Checkout({
               {paymentMethod && paymentMethod !== "PAY_NOW" && (
                 <p className="selected-payment">
                   Selected: <b>{paymentMethod === "KHATTA" ? "Khatta" : paymentMethod === "CASH" ? "Cash" : "Online"}</b>
-                  <button type="button" onClick={() => setPaymentMethod("")}>Change</button>
+                  <button type="button" onClick={() => setPaymentMethod("")} disabled={paying}>Change</button>
                 </p>
               )}
             </div>
           )}
           {notice && <p className="form-error">{notice}</p>}
           <button className="gold-btn full" type="submit" disabled={paying}>
-            {paying ? "Processing…" : !paymentOptions ? "Continue" : paymentMethod === "KHATTA" ? "Add to Khatta" : paymentMethod === "CASH" ? "Place cash order" : paymentMethod === "ONLINE" ? <>Pay {money(total)} <span>→</span></> : "Choose payment method"}
+            {paying ? <><Spinner className="button-spinner" /> {paymentStage === "checking-khatta" ? "Checking number…" : paymentStage === "creating-order" ? "Preparing order…" : paymentStage === "opening-payment" ? "Opening secure payment…" : paymentStage === "confirming-payment" ? "Confirming payment…" : "Processing…"}</> : !paymentOptions ? "Continue" : paymentMethod === "KHATTA" ? "Add to Khatta" : paymentMethod === "CASH" ? "Place cash order" : paymentMethod === "ONLINE" ? <>Pay {money(total)} <span>→</span></> : "Choose payment method"}
           </button>
           <p className="secure-note">
             {paymentMethod === "CASH" ? "Cash payment is confirmed by staff after collection" : "Payment method is confirmed by the server"}
           </p>
         </form>
       </div>
+      {paying && paymentStage === "confirming-payment" && (
+        <div className="payment-processing" role="status" aria-live="polite">
+          <div className="processing-card">
+            <Spinner className="large-spinner" />
+            <strong>Confirming your payment</strong>
+            <p>Please wait while we prepare your order and digital bill.</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 function Success({ receipt, onMenu }) {
   const khattaOrder = receipt.paymentStatus === "KHATTA";
   const cashOrder = receipt.paymentStatus === "CASH";
+  const [openingBill, setOpeningBill] = useState(false);
+  const openBill = () => {
+    setOpeningBill(true);
+    const billWindow = window.open(`${API}/receipts/${receipt.reference}`, "_blank");
+    if (!billWindow) {
+      setOpeningBill(false);
+      return;
+    }
+    window.setTimeout(() => setOpeningBill(false), 1200);
+  };
   return (
     <div className="success-page">
       <div className="success-card">
@@ -875,11 +991,10 @@ function Success({ receipt, onMenu }) {
         </div>
         <button
           className="gold-btn full"
-          onClick={() =>
-            window.open(`${API}/receipts/${receipt.reference}`, "_blank")
-          }
+          onClick={openBill}
+          disabled={openingBill}
         >
-          View digital bill <span>↗</span>
+          {openingBill ? <><Spinner className="button-spinner" /> Opening digital bill…</> : <>View digital bill <span>↗</span></>}
         </button>
         <button className="text-btn" onClick={onMenu}>
           Back to menu
@@ -902,7 +1017,11 @@ function AdminApp() {
   const [loggedIn, setLoggedIn] = useState(false),
     [username, setUsername] = useState(""),
     [password, setPassword] = useState(""),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [loginLoading, setLoginLoading] = useState(false),
+    [menuSaving, setMenuSaving] = useState(false),
+    [menuDeleting, setMenuDeleting] = useState(null),
+    [khattaSaving, setKhattaSaving] = useState(false);
   const [orders, setOrders] = useState([]),
     [menu, setMenu] = useState([]),
     [form, setForm] = useState({
@@ -956,6 +1075,7 @@ function AdminApp() {
       setLoggedIn(true);
       const menuResponse = await fetch(`${adminApi}/menu`, {
         credentials: "include",
+        cache: "no-store",
       });
       if (menuResponse.ok) setMenu(await menuResponse.json());
       const khattaResponse = await fetch(`${adminApi}/khatta/users`, {
@@ -980,39 +1100,54 @@ function AdminApp() {
   }, [adminApi, load, loggedIn]);
   const login = async (e) => {
     e.preventDefault();
-    const r = await fetch(`${adminApi}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ username, password }),
-    });
-    if (!r.ok) {
-      setError("Invalid admin credentials");
-      return;
+    setLoginLoading(true);
+    try {
+      const r = await fetch(`${adminApi}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ username, password }),
+      });
+      if (!r.ok) {
+        setError("Invalid admin credentials");
+        return;
+      }
+      setError("");
+      load();
+    } catch {
+      setError("Unable to connect to the admin server");
+    } finally {
+      setLoginLoading(false);
     }
-    setError("");
-    load();
   };
   const saveDish = async (e) => {
     e.preventDefault();
-    const r = await fetch(`${adminApi}/menu`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ ...form, price: Number(form.price) }),
-    });
-    if (r.ok) {
-      setMessage(editingId ? "Dish updated" : "Dish added");
-      setForm({
-        id: "",
-        name: "",
-        category: "",
-        description: "",
-        price: "",
+    setMenuSaving(true);
+    try {
+      const r = await fetch(`${adminApi}/menu`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ ...form, price: Number(form.price) }),
       });
-      setEditingId(null);
-      load();
-    } else setMessage("Could not save dish");
+      if (r.ok) {
+        setMessage(editingId ? "Dish updated" : "Dish added");
+        setForm({
+          id: "",
+          name: "",
+          category: "",
+          description: "",
+          price: "",
+        });
+        setEditingId(null);
+        invalidateMenuCache();
+        load();
+      } else setMessage("Could not save dish");
+    } catch {
+      setMessage("Could not save dish");
+    } finally {
+      setMenuSaving(false);
+    }
   };
   const editDish = (item) => {
     setForm({ ...item, price: String(item.price) });
@@ -1021,24 +1156,32 @@ function AdminApp() {
   };
   const deleteDish = async (item) => {
     if (!window.confirm(`Remove ${item.name} from the menu?`)) return;
-    const r = await fetch(`${adminApi}/menu/${item.id}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
-    if (r.ok) {
-      setMessage(`${item.name} removed`);
-      if (editingId === item.id) {
-        setEditingId(null);
-        setForm({
-          id: "",
-          name: "",
-          category: "Cold Beverages",
-          description: "",
-          price: "",
-        });
+    setMenuDeleting(item.id);
+    try {
+      const r = await fetch(`${adminApi}/menu/${item.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (r.ok) {
+        setMessage(`${item.name} removed`);
+        if (editingId === item.id) {
+          setEditingId(null);
+          setForm({
+            id: "",
+            name: "",
+            category: "Cold Beverages",
+            description: "",
+            price: "",
+          });
+        }
+        invalidateMenuCache();
+        load();
+      } else setMessage("Could not remove dish");
+    } catch {
+      setMessage("Could not remove dish");
+    } finally {
+      setMenuDeleting(null);
       }
-      load();
-    } else setMessage("Could not remove dish");
   };
   const confirmCashPayment = async (order) => {
     setCashConfirming(order.id);
@@ -1111,20 +1254,27 @@ function AdminApp() {
   const saveKhattaUser = async (e) => {
     e.preventDefault();
     setKhattaMessage("");
-    const response = await fetch(`${adminApi}/khatta/users`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(khattaForm),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      setKhattaMessage(data.error || "Could not create Khatta customer");
-      return;
+    setKhattaSaving(true);
+    try {
+      const response = await fetch(`${adminApi}/khatta/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(khattaForm),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setKhattaMessage(data.error || "Could not create Khatta customer");
+        return;
+      }
+      setKhattaForm({ name: "", phone: "" });
+      setKhattaMessage("Khatta customer created");
+      load();
+    } catch {
+      setKhattaMessage("Could not create Khatta customer");
+    } finally {
+      setKhattaSaving(false);
     }
-    setKhattaForm({ name: "", phone: "" });
-    setKhattaMessage("Khatta customer created");
-    load();
   };
   const settleKhatta = async (user) => {
     setKhattaBusy(user.id);
@@ -1219,8 +1369,8 @@ function AdminApp() {
               />
             </label>
             {error && <p className="form-error">{error}</p>}
-            <button className="gold-btn full">
-              Enter dashboard <span>→</span>
+            <button className="gold-btn full" disabled={loginLoading}>
+              {loginLoading ? <><Spinner className="button-spinner" /> Signing in…</> : <>Enter dashboard <span>→</span></>}
             </button>
           </form>
           <p className="secure-note">Cafe Coffee Bar 3.0 · staff only</p>
@@ -1231,7 +1381,7 @@ function AdminApp() {
     const query = orderSearch.trim().toLowerCase();
     return !query || order.order_number.toLowerCase().includes(query) || String(order.table_number || "").toLowerCase().includes(query);
   };
-  const pendingCashOrders = orders.filter((order) => order.payment_status === "CASH" && matchesOrderSearch(order));
+  const pendingCashOrders = orders.filter((order) => order.payment_status === "CASH");
   const visibleOrders = orders.filter((order) => order.payment_status !== "CASH" && matchesOrderSearch(order));
   const visibleKhattaUsers = khattaUsers.filter((user) => {
     const query = khattaSearch.trim().toLowerCase();
@@ -1296,23 +1446,6 @@ function AdminApp() {
         </div>
         {adminRoute === "order" && (
           <section className="admin-section">
-          <div className="admin-section-head">
-            <div>
-              <p className="eyebrow">ORDER HISTORY</p>
-              <h2>All orders</h2>
-            </div>
-            <span className="active-count">{visibleOrders.length} orders</span>
-          </div>
-          <label className="order-search">
-            Search orders
-            <input
-              type="search"
-              value={orderSearch}
-              onChange={(e) => setOrderSearch(e.target.value)}
-              placeholder="Search by table number or order ID"
-              aria-label="Search by table number or order ID"
-            />
-          </label>
           <section className="admin-section pending-cash-section">
             <div className="admin-section-head">
               <div>
@@ -1345,7 +1478,7 @@ function AdminApp() {
                     <span>{money(o.total)}</span>
                     <span>
                       <button className="confirm-cash-btn" type="button" onClick={() => confirmCashPayment(o)} disabled={cashConfirming === o.id}>
-                        {cashConfirming === o.id ? "Confirming…" : "Confirm paid"}
+                        {cashConfirming === o.id ? <><Spinner /> Confirming…</> : "Confirm paid"}
                       </button>
                     </span>
                   </div>
@@ -1355,46 +1488,65 @@ function AdminApp() {
               )}
             </div>
           </section>
-          <div className="orders-table">
-            <div className="order-row order-head">
-              <span>Order</span>
-              <span>Items</span>
-              <span>Mobile</span>
-              <span>Table</span>
-              <span>Total</span>
-              <span>Payment</span>
+          <section className="admin-section all-orders-section">
+            <div className="admin-section-head">
+              <div>
+                <p className="eyebrow">ORDER HISTORY</p>
+                <h2>All orders</h2>
+              </div>
+              <span className="active-count">{visibleOrders.length} orders</span>
             </div>
-            {visibleOrders.length ? (
-              visibleOrders.map((o) => (
-                <div className="order-row" key={o.id}>
-                  <span>
-                    <b>{o.order_number}</b>
-                    <small>
-                      {new Date(o.createdAt).toLocaleTimeString("en-IN", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </small>
-                  </span>
-                  <span className="order-items">
-                    {o.items.map((i) => (
-                      <span key={i.menuItemId}>
-                        {i.quantity} × {i.itemName}
-                      </span>
-                    ))}
-                  </span>
-                  <span>+91 {o.phone}</span>
-                  <span>{o.table_number || "—"}</span>
-                  <span>{money(o.total)}</span>
-                  <span>
-                    <b className="paid">{o.payment_status}</b>
-                  </span>
-                </div>
-              ))
-            ) : (
-              <p className="empty-state">No orders yet.</p>
-            )}
-          </div>
+            <label className="order-search">
+              Search orders
+              <input
+                type="search"
+                value={orderSearch}
+                onChange={(e) => setOrderSearch(e.target.value)}
+                placeholder="Search by table number or order ID"
+                aria-label="Search by table number or order ID"
+              />
+            </label>
+            <div className="orders-table">
+              <div className="order-row order-head">
+                <span>Order</span>
+                <span>Items</span>
+                <span>Mobile</span>
+                <span>Table</span>
+                <span>Total</span>
+                <span>Payment</span>
+              </div>
+              {visibleOrders.length ? (
+                visibleOrders.map((o) => (
+                  <div className="order-row" key={o.id}>
+                    <span>
+                      <b>{o.order_number}</b>
+                      <small>
+                        {new Date(o.createdAt).toLocaleTimeString("en-IN", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </small>
+                    </span>
+                    <span className="order-items">
+                      {o.items.map((i) => (
+                        <span key={i.menuItemId}>
+                          {i.quantity} × {i.itemName}
+                        </span>
+                      ))}
+                    </span>
+                    <span>+91 {o.phone}</span>
+                    <span>{o.table_number || "—"}</span>
+                    <span>{money(o.total)}</span>
+                    <span>
+                      <b className="paid">{o.payment_status}</b>
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-state">No orders yet.</p>
+              )}
+            </div>
+          </section>
         </section>
         )}
         {adminRoute === "cash-order" && (
@@ -1442,7 +1594,7 @@ function AdminApp() {
                 </div>
                 {cashOrderMessage && <p className="form-success">{cashOrderMessage}</p>}
                 <button className="gold-btn full" type="submit" disabled={cashOrderSaving}>
-                  {cashOrderSaving ? "Placing order…" : "Place cash order"} <span>₹{cashOrderTotal}</span>
+                  {cashOrderSaving ? <><Spinner className="button-spinner" /> Placing order…</> : <>Place cash order <span>₹{cashOrderTotal}</span></>}
                 </button>
               </form>
               <div className="cash-menu-picker">
@@ -1510,7 +1662,9 @@ function AdminApp() {
               inputMode="numeric"
               required
             />
-            <button className="gold-btn" type="submit">Add customer <span>+</span></button>
+            <button className="gold-btn" type="submit" disabled={khattaSaving}>
+              {khattaSaving ? <><Spinner className="button-spinner" /> Adding…</> : <>Add customer <span>+</span></>}
+            </button>
           </form>
           {khattaMessage && <p className="form-success">{khattaMessage}</p>}
           <div className="khatta-list">
@@ -1522,7 +1676,7 @@ function AdminApp() {
                 </div>
                 <strong>{money(user.balance)}</strong>
                 <button className="settle-btn" type="button" onClick={() => settleKhatta(user)} disabled={khattaBusy === user.id || Number(user.balance) === 0}>
-                  {khattaBusy === user.id ? "Preparing…" : "Download & settle"}
+                  {khattaBusy === user.id ? <><Spinner /> Preparing…</> : "Download & settle"}
                 </button>
               </div>
             )) : <p className="empty-state">{khattaUsers.length ? "No matching customers." : "No Khatta customers yet."}</p>}
@@ -1592,9 +1746,8 @@ function AdminApp() {
                 setForm({ ...form, description: e.target.value })
               }
             />
-            <button className="gold-btn">
-              {editingId ? "Update dish" : "Save dish"}{" "}
-              <span>{editingId ? "✓" : "+"}</span>
+            <button className="gold-btn" type="submit" disabled={menuSaving}>
+              {menuSaving ? <><Spinner className="button-spinner" /> Saving…</> : <>{editingId ? "Update dish" : "Save dish"}{" "}<span>{editingId ? "✓" : "+"}</span></>}
             </button>
           </form>
           {message && <p className="form-success">{message}</p>}
@@ -1620,8 +1773,9 @@ function AdminApp() {
                     type="button"
                     className="delete-btn"
                     onClick={() => deleteDish(item)}
+                    disabled={menuDeleting === item.id}
                   >
-                    Delete
+                    {menuDeleting === item.id ? <><Spinner className="button-spinner" /> Deleting…</> : "Delete"}
                   </button>
                 </div>
               </div>
