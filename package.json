@@ -10,7 +10,7 @@
     "dev": "vite",
     "server": "node server/index.js",
     "migrate:sqlite-to-postgres": "node server/migrate-sqlite-to-postgres.js",
-    "migrate:sqlite-to-postgres": "node server/migrate-sqlite-to-postgres.js",
+    "clear:order-history": "node server/clear-order-history.js",
     "dev:full": "concurrently \"vite\" \"node server/index.js\"",
     "build": "vite build",
     "lint": "eslint .",

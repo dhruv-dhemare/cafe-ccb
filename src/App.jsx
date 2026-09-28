@@ -76,9 +76,12 @@ function App() {
     [showCart, setShowCart] = useState(isCartRoute()),
     [checkout, setCheckout] = useState(initialRoute === "checkout");
   const [phone, setPhone] = useState(""),
+    [tableNumber, setTableNumber] = useState(""),
     [notice, setNotice] = useState(""),
     [receipt, setReceipt] = useState(readStoredReceipt),
-    [paying, setPaying] = useState(false);
+    [paying, setPaying] = useState(false),
+    [paymentOptions, setPaymentOptions] = useState(null),
+    [paymentMethod, setPaymentMethod] = useState("");
   const [showIntro, setShowIntro] = useState(
     !window.location.pathname.startsWith(ADMIN_PATH),
   );
@@ -88,6 +91,8 @@ function App() {
     document.body.scrollTop = 0;
   }, []);
   const navigate = (path) => {
+    setPaymentOptions(null);
+    setPaymentMethod("");
     window.history.pushState({}, "", path);
     const route = getRoute();
     setView(
@@ -161,10 +166,49 @@ function App() {
         )
         .filter((i) => i.quantity > 0);
     });
+  const updateCheckoutPhone = (value) => {
+    setPhone(value);
+    setPaymentOptions(null);
+    setPaymentMethod("");
+  };
+  const updateCheckoutTable = (value) => {
+    setTableNumber(value);
+    setPaymentOptions(null);
+    setPaymentMethod("");
+  };
   const placeOrder = async (e) => {
     e.preventDefault();
     if (!/^\d{10}$/.test(phone.replace(/\D/g, "")))
       return setNotice("Please enter a valid 10-digit mobile number.");
+    const requiresTable = cart.some((item) => item.category !== "Cigarettes");
+    if (requiresTable && !/^[A-Za-z0-9][A-Za-z0-9 _-]{0,19}$/.test(tableNumber.trim()))
+      return setNotice("Please enter your table number.");
+    if (!paymentOptions) {
+      setNotice("");
+      setPaying(true);
+      try {
+        const optionsResponse = await fetch(`${API}/payment/options`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            phone,
+            tableNumber: requiresTable ? tableNumber.trim() : "",
+            items: cart.map(({ id, quantity }) => ({ id, quantity })),
+          }),
+        });
+        const options = await optionsResponse.json();
+        if (!optionsResponse.ok) throw Error(options.error || "Unable to load payment options");
+        setPaymentOptions(options);
+      } catch (error) {
+        setNotice(error.message);
+      } finally {
+        setPaying(false);
+      }
+      return;
+    }
+    if (!paymentMethod || paymentMethod === "PAY_NOW") {
+      return setNotice("Choose how you want to pay.");
+    }
     setNotice("");
     setPaying(true);
     const orderSource =
@@ -178,16 +222,21 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           phone,
+          tableNumber: requiresTable ? tableNumber.trim() : "",
+          paymentMethod,
           items: cart.map(({ id, quantity }) => ({ id, quantity })),
         }),
       });
       const paymentOrder = await create.json();
       if (!create.ok)
         throw Error(paymentOrder.error || "Unable to start payment");
-      if (paymentOrder.paymentMethod === "KHATTA") {
+      if (paymentOrder.paymentMethod === "KHATTA" || paymentOrder.paymentMethod === "CASH") {
         sessionStorage.setItem("ccb-receipt", JSON.stringify(paymentOrder));
         setReceipt(paymentOrder);
         setCart([]);
+        setTableNumber("");
+        setPaymentOptions(null);
+        setPaymentMethod("");
         setPaying(false);
         navigate(`/success?source=${orderSource}`);
         return;
@@ -220,6 +269,7 @@ function App() {
             sessionStorage.setItem("ccb-receipt", JSON.stringify(data));
             setReceipt(data);
             setCart([]);
+            setTableNumber("");
             navigate(`/success?source=${orderSource}`);
           } catch (error) {
             setNotice(error.message);
@@ -269,7 +319,13 @@ function App() {
         cart={cart}
         total={total}
         phone={phone}
-        setPhone={setPhone}
+        setPhone={updateCheckoutPhone}
+        tableNumber={tableNumber}
+        setTableNumber={updateCheckoutTable}
+        requiresTable={cart.some((item) => item.category !== "Cigarettes")}
+        paymentOptions={paymentOptions}
+        paymentMethod={paymentMethod}
+        setPaymentMethod={setPaymentMethod}
         onSubmit={placeOrder}
         onBack={() =>
           navigate(
@@ -654,6 +710,12 @@ function Checkout({
   total,
   phone,
   setPhone,
+  tableNumber,
+  setTableNumber,
+  requiresTable,
+  paymentOptions,
+  paymentMethod,
+  setPaymentMethod,
   onSubmit,
   onBack,
   notice,
@@ -713,18 +775,66 @@ function Checkout({
               required
             />
           </div>
+          {requiresTable && (
+            <>
+              <label htmlFor="table-number">Table number</label>
+              <input
+                id="table-number"
+                className="table-input"
+                value={tableNumber}
+                onChange={(e) => setTableNumber(e.target.value.slice(0, 20))}
+                placeholder="For example, 5 or A2"
+                autoComplete="off"
+                required
+              />
+            </>
+          )}
+          {paymentOptions && (
+            <div className="payment-options">
+              <p className="eyebrow">PAYMENT METHOD</p>
+              {paymentOptions.khattaEligible && !paymentMethod && (
+                <div className="payment-choice-grid">
+                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("KHATTA")}>
+                    <b>Put in Khatta</b>
+                    <small>Settle with the owner later</small>
+                  </button>
+                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("PAY_NOW")}>
+                    <b>Pay right now</b>
+                    <small>Choose cash or online</small>
+                  </button>
+                </div>
+              )}
+              {(!paymentOptions.khattaEligible || paymentMethod === "PAY_NOW") && (
+                <div className="payment-choice-grid">
+                  {paymentOptions.khattaEligible && (
+                    <button type="button" className="payment-back" onClick={() => setPaymentMethod("")}>
+                      ← Back
+                    </button>
+                  )}
+                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("CASH")}>
+                    <b>Pay with cash</b>
+                    <small>Pay at the counter</small>
+                  </button>
+                  <button type="button" className="payment-choice" onClick={() => setPaymentMethod("ONLINE")}>
+                    <b>Pay online</b>
+                    <small>Secure Razorpay payment</small>
+                  </button>
+                </div>
+              )}
+              {paymentMethod && paymentMethod !== "PAY_NOW" && (
+                <p className="selected-payment">
+                  Selected: <b>{paymentMethod === "KHATTA" ? "Khatta" : paymentMethod === "CASH" ? "Cash" : "Online"}</b>
+                  <button type="button" onClick={() => setPaymentMethod("")}>Change</button>
+                </p>
+              )}
+            </div>
+          )}
           {notice && <p className="form-error">{notice}</p>}
           <button className="gold-btn full" type="submit" disabled={paying}>
-            {paying ? (
-              "Opening secure checkout…"
-            ) : (
-              <>
-                Pay {money(total)} <span>→</span>
-              </>
-            )}
+            {paying ? "Processing…" : !paymentOptions ? "Continue" : paymentMethod === "KHATTA" ? "Add to Khatta" : paymentMethod === "CASH" ? "Place cash order" : paymentMethod === "ONLINE" ? <>Pay {money(total)} <span>→</span></> : "Choose payment method"}
           </button>
           <p className="secure-note">
-            Razorpay secure checkout · Payment confirmed by server
+            {paymentMethod === "CASH" ? "Cash payment is confirmed by staff after collection" : "Payment method is confirmed by the server"}
           </p>
         </form>
       </div>
@@ -733,29 +843,35 @@ function Checkout({
 }
 function Success({ receipt, onMenu }) {
   const khattaOrder = receipt.paymentStatus === "KHATTA";
+  const cashOrder = receipt.paymentStatus === "CASH";
   return (
     <div className="success-page">
       <div className="success-card">
         <div className="success-icon">✓</div>
-        <p className="eyebrow">{khattaOrder ? "ORDER CONFIRMED" : "PAYMENT SUCCESSFUL"}</p>
+        <p className="eyebrow">{khattaOrder || cashOrder ? "ORDER CONFIRMED" : "PAYMENT SUCCESSFUL"}</p>
         <h1>
           Thank you for
           <br />
           <em>ordering in.</em>
         </h1>
         <p className="success-message">
-          Your order is confirmed and your digital receipt is ready.
+          {cashOrder ? "Your order is confirmed. Please pay cash at the counter." : "Your order is confirmed and your digital receipt is ready."}
         </p>
         <div className="receipt-preview">
           <span>
             ORDER <b>{receipt.orderNumber}</b>
           </span>
           <span>
-            {khattaOrder ? "ORDER TOTAL" : "AMOUNT PAID"} <b>{money(receipt.total)}</b>
+            {khattaOrder || cashOrder ? "ORDER TOTAL" : "AMOUNT PAID"} <b>{money(receipt.total)}</b>
           </span>
           <span>
             MOBILE <b>+91 {receipt.phone}</b>
           </span>
+          {receipt.tableNumber && (
+            <span>
+              TABLE <b>{receipt.tableNumber}</b>
+            </span>
+          )}
         </div>
         <button
           className="gold-btn full"
@@ -772,7 +888,7 @@ function Success({ receipt, onMenu }) {
     </div>
   );
 }
-const ADMIN_ROUTES = ["order", "menu", "khatta"];
+const ADMIN_ROUTES = ["order", "cash-order", "menu", "khatta"];
 const readAdminRoute = () => {
   const route = window.location.pathname
     .slice(ADMIN_PATH.length)
@@ -798,12 +914,19 @@ function AdminApp() {
     }),
     [message, setMessage] = useState(""),
     [editingId, setEditingId] = useState(null),
-    [statusSaving, setStatusSaving] = useState(null),
+    [orderSearch, setOrderSearch] = useState(""),
+    [cashConfirming, setCashConfirming] = useState(null),
     [khattaUsers, setKhattaUsers] = useState([]),
     [khattaForm, setKhattaForm] = useState({ name: "", phone: "" }),
     [khattaSearch, setKhattaSearch] = useState(""),
     [khattaMessage, setKhattaMessage] = useState(""),
-    [khattaBusy, setKhattaBusy] = useState(null);
+    [khattaBusy, setKhattaBusy] = useState(null),
+    [cashOrderCart, setCashOrderCart] = useState([]),
+    [cashOrderSearch, setCashOrderSearch] = useState(""),
+    [cashOrderPhone, setCashOrderPhone] = useState(""),
+    [cashOrderTable, setCashOrderTable] = useState(""),
+    [cashOrderMessage, setCashOrderMessage] = useState(""),
+    [cashOrderSaving, setCashOrderSaving] = useState(false);
   useEffect(() => {
     const rawRoute = window.location.pathname
       .slice(ADMIN_PATH.length)
@@ -917,22 +1040,73 @@ function AdminApp() {
       load();
     } else setMessage("Could not remove dish");
   };
-  const markServed = async (order) => {
-    setStatusSaving(order.id);
-    const r = await fetch(`${adminApi}/orders/${order.id}/status`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ status: "COMPLETED" }),
-    });
-    if (r.ok) {
-      setOrders((current) =>
-        current.map((item) =>
-          item.id === order.id ? { ...item, order_status: "COMPLETED" } : item,
-        ),
-      );
+  const confirmCashPayment = async (order) => {
+    setCashConfirming(order.id);
+    try {
+      const response = await fetch(`${adminApi}/orders/${order.id}/confirm-cash`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Could not confirm cash payment");
+      }
+      await load();
+    } catch (cashError) {
+      setMessage(cashError.message);
+    } finally {
+      setCashConfirming(null);
     }
-    setStatusSaving(null);
+  };
+  const updateCashOrderCart = (item, delta) => {
+    setCashOrderCart((current) => {
+      const found = current.find((entry) => entry.id === item.id);
+      if (!found && delta > 0) return [...current, { ...item, quantity: 1 }];
+      return current
+        .map((entry) => entry.id === item.id ? { ...entry, quantity: entry.quantity + delta } : entry)
+        .filter((entry) => entry.quantity > 0);
+    });
+  };
+  const placeCashOrder = async (e) => {
+    e.preventDefault();
+    setCashOrderMessage("");
+    if (!/^\d{10}$/.test(cashOrderPhone)) {
+      setCashOrderMessage("Enter a valid 10-digit mobile number");
+      return;
+    }
+    if (!cashOrderCart.length) {
+      setCashOrderMessage("Add at least one item to the order");
+      return;
+    }
+    const requiresTable = cashOrderCart.some((item) => item.category !== "Cigarettes");
+    if (requiresTable && !/^[A-Za-z0-9][A-Za-z0-9 _-]{0,19}$/.test(cashOrderTable.trim())) {
+      setCashOrderMessage("Enter a valid table number for a food order");
+      return;
+    }
+    setCashOrderSaving(true);
+    try {
+      const response = await fetch(`${adminApi}/cash-orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          phone: cashOrderPhone,
+          tableNumber: requiresTable ? cashOrderTable.trim() : "",
+          items: cashOrderCart.map(({ id, quantity }) => ({ id, quantity })),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Could not place cash order");
+      setCashOrderCart([]);
+      setCashOrderPhone("");
+      setCashOrderTable("");
+      setCashOrderMessage(`${data.orderNumber} placed as cash order`);
+      load();
+    } catch (cashError) {
+      setCashOrderMessage(cashError.message);
+    } finally {
+      setCashOrderSaving(false);
+    }
   };
   const saveKhattaUser = async (e) => {
     e.preventDefault();
@@ -1053,16 +1227,21 @@ function AdminApp() {
         </div>
       </div>
     );
-  const activeOrders = orders.filter(
-      (o) => o.order_status !== "COMPLETED" && o.order_status !== "CANCELLED",
-    ),
-    today = orders.filter(
-      (o) => new Date(o.createdAt).toDateString() === new Date().toDateString(),
-    ),
-    sales = today.reduce((s, o) => s + o.total, 0);
+  const matchesOrderSearch = (order) => {
+    const query = orderSearch.trim().toLowerCase();
+    return !query || order.order_number.toLowerCase().includes(query) || String(order.table_number || "").toLowerCase().includes(query);
+  };
+  const pendingCashOrders = orders.filter((order) => order.payment_status === "CASH" && matchesOrderSearch(order));
+  const visibleOrders = orders.filter((order) => order.payment_status !== "CASH" && matchesOrderSearch(order));
   const visibleKhattaUsers = khattaUsers.filter((user) => {
     const query = khattaSearch.trim().toLowerCase();
     return !query || user.name.toLowerCase().includes(query) || user.phone.includes(query);
+  });
+  const cashOrderTotal = cashOrderCart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const cashOrderHasFood = cashOrderCart.some((item) => item.category !== "Cigarettes");
+  const visibleCashMenu = menu.filter((item) => {
+    const query = cashOrderSearch.trim().toLowerCase();
+    return !query || item.name.toLowerCase().includes(query) || item.category.toLowerCase().includes(query);
   });
   return (
     <div className="admin-shell">
@@ -1080,6 +1259,7 @@ function AdminApp() {
         </div>
         <nav className="admin-nav" aria-label="Admin sections">
           <button className={adminRoute === "order" ? "active" : ""} onClick={() => navigateAdmin("order")}>Orders</button>
+          <button className={adminRoute === "cash-order" ? "active" : ""} onClick={() => navigateAdmin("cash-order")}>Cash order</button>
           <button className={adminRoute === "menu" ? "active" : ""} onClick={() => navigateAdmin("menu")}>Menu</button>
           <button className={adminRoute === "khatta" ? "active" : ""} onClick={() => navigateAdmin("khatta")}>Khatta</button>
         </nav>
@@ -1115,95 +1295,77 @@ function AdminApp() {
           </span>
         </div>
         {adminRoute === "order" && (
-          <>
-        <section className="admin-section recent-section">
-          <div className="admin-section-head">
-            <div>
-              <p className="eyebrow">ACTION REQUIRED</p>
-              <h2>Recent orders</h2>
-            </div>
-            <span className="active-count">{activeOrders.length} to serve</span>
-          </div>
-          <div className="orders-table">
-            <div className="order-row order-head">
-              <span>Order</span>
-              <span>Items</span>
-              <span>Mobile</span>
-              <span>Total</span>
-              <span>Payment</span>
-            </div>
-            {activeOrders.length ? (
-              activeOrders.map((o) => (
-                <div className="order-row recent-order-row" key={o.id}>
-                  <span>
-                    <b>{o.order_number}</b>
-                    <small>
-                      {new Date(o.createdAt).toLocaleTimeString("en-IN", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </small>
-                    <button
-                      className="served-btn"
-                      type="button"
-                      onClick={() => markServed(o)}
-                      disabled={statusSaving === o.id}
-                    >
-                      {statusSaving === o.id ? "Saving…" : "✓ Served"}
-                    </button>
-                  </span>
-                  <span className="order-items">
-                    {o.items.map((i) => (
-                      <span key={i.menuItemId}>
-                        {i.quantity} × {i.itemName}
-                      </span>
-                    ))}
-                  </span>
-                  <span>+91 {o.phone}</span>
-                  <span>{money(o.total)}</span>
-                  <span>
-                    <b className="paid">{o.payment_status}</b>
-                  </span>
-                </div>
-              ))
-            ) : (
-              <p className="empty-state">
-                All caught up. Served orders will move to order history.
-              </p>
-            )}
-          </div>
-        </section>
-        <div className="stats">
-          <div>
-            <span>Today's orders</span>
-            <b>{today.length}</b>
-          </div>
-          <div>
-            <span>Today's sales</span>
-            <b>{money(sales)}</b>
-          </div>
-          <div>
-            <span>All paid orders</span>
-            <b>{orders.length}</b>
-          </div>
-        </div>
-        <section className="admin-section">
+          <section className="admin-section">
           <div className="admin-section-head">
             <div>
               <p className="eyebrow">ORDER HISTORY</p>
               <h2>All orders</h2>
             </div>
+            <span className="active-count">{visibleOrders.length} orders</span>
           </div>
+          <label className="order-search">
+            Search orders
+            <input
+              type="search"
+              value={orderSearch}
+              onChange={(e) => setOrderSearch(e.target.value)}
+              placeholder="Search by table number or order ID"
+              aria-label="Search by table number or order ID"
+            />
+          </label>
+          <section className="admin-section pending-cash-section">
+            <div className="admin-section-head">
+              <div>
+                <p className="eyebrow">CASH COLLECTION</p>
+                <h2>Pending cash payments</h2>
+              </div>
+              <span className="active-count">{pendingCashOrders.length} pending</span>
+            </div>
+            <div className="orders-table">
+              <div className="order-row order-head">
+                <span>Order</span>
+                <span>Items</span>
+                <span>Mobile</span>
+                <span>Table</span>
+                <span>Total</span>
+                <span>Action</span>
+              </div>
+              {pendingCashOrders.length ? (
+                pendingCashOrders.map((o) => (
+                  <div className="order-row" key={o.id}>
+                    <span>
+                      <b>{o.order_number}</b>
+                      <small>{new Date(o.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</small>
+                    </span>
+                    <span className="order-items">
+                      {o.items.map((i) => <span key={i.menuItemId}>{i.quantity} × {i.itemName}</span>)}
+                    </span>
+                    <span>+91 {o.phone}</span>
+                    <span>{o.table_number || "—"}</span>
+                    <span>{money(o.total)}</span>
+                    <span>
+                      <button className="confirm-cash-btn" type="button" onClick={() => confirmCashPayment(o)} disabled={cashConfirming === o.id}>
+                        {cashConfirming === o.id ? "Confirming…" : "Confirm paid"}
+                      </button>
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-state">No pending cash payments.</p>
+              )}
+            </div>
+          </section>
           <div className="orders-table">
             <div className="order-row order-head">
               <span>Order</span>
               <span>Items</span>
               <span>Mobile</span>
+              <span>Table</span>
               <span>Total</span>
-              <span>Status</span>
+              <span>Payment</span>
             </div>
-            {orders.length ? (
-              orders.map((o) => (
+            {visibleOrders.length ? (
+              visibleOrders.map((o) => (
                 <div className="order-row" key={o.id}>
                   <span>
                     <b>{o.order_number}</b>
@@ -1222,12 +1384,10 @@ function AdminApp() {
                     ))}
                   </span>
                   <span>+91 {o.phone}</span>
+                  <span>{o.table_number || "—"}</span>
                   <span>{money(o.total)}</span>
                   <span>
                     <b className="paid">{o.payment_status}</b>
-                    <small className="service-status">
-                      {o.order_status === "COMPLETED" ? "✓ SERVED" : "WAITING"}
-                    </small>
                   </span>
                 </div>
               ))
@@ -1236,7 +1396,88 @@ function AdminApp() {
             )}
           </div>
         </section>
-          </>
+        )}
+        {adminRoute === "cash-order" && (
+          <section className="admin-section cash-order-section">
+            <div className="admin-section-head">
+              <div>
+                <p className="eyebrow">STAFF ORDER ENTRY</p>
+                <h2>Place cash order</h2>
+              </div>
+              <span className="active-count">No online payment</span>
+            </div>
+            <div className="cash-order-layout">
+              <form className="cash-order-card" onSubmit={placeCashOrder}>
+                <label>
+                  Customer mobile number
+                  <input
+                    value={cashOrderPhone}
+                    onChange={(e) => setCashOrderPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                    placeholder="10-digit number"
+                    inputMode="numeric"
+                    required
+                  />
+                </label>
+                {cashOrderHasFood && (
+                  <label>
+                    Table number
+                    <input
+                      value={cashOrderTable}
+                      onChange={(e) => setCashOrderTable(e.target.value.slice(0, 20))}
+                      placeholder="For example, 5 or A2"
+                      autoComplete="off"
+                      required
+                    />
+                  </label>
+                )}
+                <div className="cash-order-summary">
+                  <p className="eyebrow">ORDER SUMMARY</p>
+                  {cashOrderCart.length ? cashOrderCart.map((item) => (
+                    <div className="cash-summary-row" key={item.id}>
+                      <span>{item.name} <small>× {item.quantity}</small></span>
+                      <b>{money(item.price * item.quantity)}</b>
+                    </div>
+                  )) : <p className="empty-state">Select items to build the order.</p>}
+                  <div className="cash-total"><span>Total</span><strong>{money(cashOrderTotal)}</strong></div>
+                </div>
+                {cashOrderMessage && <p className="form-success">{cashOrderMessage}</p>}
+                <button className="gold-btn full" type="submit" disabled={cashOrderSaving}>
+                  {cashOrderSaving ? "Placing order…" : "Place cash order"} <span>₹{cashOrderTotal}</span>
+                </button>
+              </form>
+              <div className="cash-menu-picker">
+                <p className="eyebrow">LIVE MENU</p>
+                <label className="cash-menu-search">
+                  Search menu
+                  <input
+                    value={cashOrderSearch}
+                    onChange={(e) => setCashOrderSearch(e.target.value)}
+                    placeholder="Search item or category"
+                  />
+                </label>
+                <div className="cash-menu-list">
+                  {visibleCashMenu.map((item) => {
+                    const selected = cashOrderCart.find((entry) => entry.id === item.id);
+                    return (
+                      <div className={`cash-menu-row ${!item.available ? "sold-out" : ""}`} key={item.id}>
+                        <span><b>{item.name}</b><small>{item.category} · {money(item.price)}</small></span>
+                        {selected ? (
+                          <span className="quantity">
+                            <button type="button" onClick={() => updateCashOrderCart(item, -1)}>−</button>
+                            <b>{selected.quantity}</b>
+                            <button type="button" onClick={() => updateCashOrderCart(item, 1)}>+</button>
+                          </span>
+                        ) : (
+                          <button className="add-btn" type="button" disabled={!item.available} onClick={() => updateCashOrderCart(item, 1)}>{item.available ? "Add +" : "Sold out"}</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {!visibleCashMenu.length && <p className="empty-state">No matching menu items.</p>}
+                </div>
+              </div>
+            </div>
+          </section>
         )}
         {adminRoute === "khatta" && (
           <section className="admin-section khatta-section">
