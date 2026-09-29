@@ -6,6 +6,8 @@ import cookieParser from 'cookie-parser'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import rateLimit from 'express-rate-limit'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import * as sqliteDb from './db.js'
 import * as postgresDb from './db-postgres.js'
 import { MENU } from './menu-data.js'
@@ -18,7 +20,7 @@ const jwtSecret = process.env.ADMIN_SESSION_SECRET || 'development-only-change-m
 const razorpayBaseUrl = process.env.RAZORPAY_API_BASE_URL || 'https://api.razorpay.com/v1'
 const razorpayConfigured = () => Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
 const database = process.env.DATABASE_URL ? postgresDb : sqliteDb
-const { confirmCashOrder, createCashOrder, createKhattaOrder, createKhattaUser, createPaymentSession, deleteMenu, finalizePaymentSession, findKhattaUserByPhone, findPaymentSessionByReference, findPaymentSessionByRazorpayOrderId, findReceipt, getKhattaStatement, getMenuByIds, hasWebhookEvent, listKhattaUsers, listMenu, listOrders, markPaymentSessionFailed, newReference, recordWebhookEvent, seedMenu, settleKhattaUser, syncFoodMenu, upsertMenu } = database
+const { clearOrdersAfterExport, confirmCashOrder, createCashOrder, createKhattaOrder, createKhattaUser, createPaymentSession, deleteMenu, finalizePaymentSession, findKhattaUserByPhone, findPaymentSessionByReference, findPaymentSessionByRazorpayOrderId, findReceipt, getKhattaStatement, getMenuByIds, getSetting, hasWebhookEvent, listKhattaUsers, listMenu, listOrders, markPaymentSessionFailed, newReference, purgeTransientData, recordWebhookEvent, seedMenu, setSetting, settleKhattaUser, syncFoodMenu, upsertMenu } = database
 await seedMenu(MENU)
 await syncFoodMenu(MENU.filter(item => item.category !== 'Cigarettes'), 'photo-menu-2026-09-28')
 
@@ -61,9 +63,33 @@ app.use(express.json({ limit: '100kb' }))
 app.use(cookieParser())
 
 const adminLimiter = rateLimit({ windowMs:15 * 60 * 1000, limit:30, standardHeaders:true, legacyHeaders:false })
+// Keep normal customers fast while limiting accidental refresh storms and automated bursts.
+const publicMenuLimiter = rateLimit({ windowMs:15 * 60 * 1000, limit:240, standardHeaders:true, legacyHeaders:false })
+const publicOrderLimiter = rateLimit({ windowMs:15 * 60 * 1000, limit:120, standardHeaders:true, legacyHeaders:false })
+const publicStatusLimiter = rateLimit({ windowMs:15 * 60 * 1000, limit:300, standardHeaders:true, legacyHeaders:false })
+app.use('/api/menu', publicMenuLimiter)
+app.use('/api/payment/options', publicOrderLimiter)
+app.use('/api/payment/create-order', publicOrderLimiter)
+app.use('/api/payment/verify', publicOrderLimiter)
+app.use('/api/payment/status', publicStatusLimiter)
+app.disable('x-powered-by')
+app.use((req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff')
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+  next()
+})
 const adminCookieOptions = { httpOnly:true, sameSite:process.env.NODE_ENV==='production' ? 'none' : 'strict', secure:process.env.NODE_ENV==='production', maxAge:20*60*60*1000, path:adminPath }
 const adminOrderStreams = new Set()
-const khattaSettlementTokens = new Map()
+const exportDir = path.join(process.cwd(), 'exports')
+const csvCell = value => `"${String(value ?? '').replaceAll('"', '""')}"`
+const ordersCsv = orders => [['Order','Date','Mobile','Table','Items','Total','Payment'], ...orders.map(order => [order.order_number, order.createdAt, order.phone, order.table_number || '', order.items.map(item => `${item.quantity} x ${item.itemName}`).join('; '), order.total, order.payment_status])].map(row => row.map(csvCell).join(',')).join('\n')
+const writeOrderExport = async () => { const allOrders = await listOrders(); const today = localDay(new Date()); const orders = allOrders.filter(order => localDay(order.createdAt) < today); const previousFile = await getSetting('last-order-export', null); const stamp = new Date().toISOString().replaceAll(':','-').replaceAll('.','-'); await fs.mkdir(exportDir, { recursive:true }); const fileName = `orders-${stamp}.csv`; await fs.writeFile(path.join(exportDir, fileName), ordersCsv(orders), 'utf8'); if (previousFile && previousFile !== fileName) { try { await fs.unlink(path.join(exportDir, path.basename(previousFile))) } catch { /* The pending file may already have been removed. */ } } await setSetting('last-order-export', fileName); await setSetting('last-order-export-ids', JSON.stringify(orders.map(order => order.id))); await setSetting('last-order-export-at', new Date().toISOString()); return { fileName, orders } }
+let exportTimer = null
+const exportTimeZone = process.env.APP_TIMEZONE || 'Asia/Kolkata'
+const localParts = value => Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone:exportTimeZone, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23' }).formatToParts(new Date(value)).filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]))
+const localDay = value => { const parts = localParts(value); return `${parts.year}-${parts.month}-${parts.day}` }
+const scheduleOrderExport = async (skipMissedCatchUp = false) => { if (exportTimer) clearTimeout(exportTimer); const enabled = (await getSetting('order-export-enabled', 'true')) === 'true'; const [hours, minutes] = (await getSetting('order-export-time', '23:59')).split(':').map(Number); const now = new Date(); const current = localParts(now); const targetMinutes = hours * 60 + minutes; const currentMinutes = current.hour * 60 + current.minute; const lastExportAt = await getSetting('last-order-export-at', null); if (enabled && !skipMissedCatchUp && currentMinutes >= targetMinutes && (!lastExportAt || localDay(lastExportAt) !== localDay(now))) { try { await writeOrderExport() } catch (error) { console.error('[order-export]', error.message); return scheduleOrderExport(true) } } const localToday = Date.UTC(current.year, current.month - 1, current.day, hours, minutes); const localNow = Date.UTC(current.year, current.month - 1, current.day, current.hour, current.minute, current.second) + now.getMilliseconds(); let delay = localToday - localNow; if (delay <= 0) delay += 24 * 60 * 60 * 1000; exportTimer = setTimeout(async () => { let failed = false; try { if (enabled) await writeOrderExport(); await purgeTransientData() } catch (error) { failed = true; console.error('[daily-maintenance]', error.message) } finally { scheduleOrderExport(failed).catch(error => console.error('[daily-maintenance-schedule]', error.message)) } }, Math.max(1000, delay)) }
+scheduleOrderExport().catch(error => console.error('[order-export-schedule]', error.message))
 const MENU_CACHE_TTL = 2 * 60 * 1000
 let menuCache = { items:null, etag:null, expiresAt:0 }
 const getCachedMenu = async () => {
@@ -173,6 +199,7 @@ app.get('/api/receipts/:reference', async (req,res) => { const order=await findR
 app.post(`${adminPath}/api/login`, adminLimiter, async (req,res) => { const { username, password } = req.body; const expectedUser=process.env.ADMIN_USERNAME || 'admin'; if(username !== expectedUser || !(await verifyAdminPassword(password))) return res.status(401).json({ error:'Invalid admin credentials' }); res.cookie('ccb_admin', jwt.sign({ sub:username },jwtSecret,{ expiresIn:'20h' }),adminCookieOptions); res.json({ ok:true }) })
 app.post(`${adminPath}/api/logout`, auth, (req,res) => { res.clearCookie('ccb_admin', { path:adminPath }); res.json({ ok:true }) })
 app.get(`${adminPath}/api/orders`, auth, async (req,res) => res.json(await listOrders()))
+app.get(`${adminPath}/api/orders/export`, auth, async (req,res) => { const result = await writeOrderExport(); const fileName = result.fileName; const orderIds = result.orders.map(order => order.id); const cleanup = async () => { try { await clearOrdersAfterExport(orderIds); await fs.unlink(path.join(exportDir, path.basename(fileName))); await setSetting('last-order-export', ''); await setSetting('last-order-export-ids', '[]'); await setSetting('last-order-export-at', new Date().toISOString()) } catch (error) { console.error('[order-export-cleanup]', error.message) } }; res.once('finish', cleanup); res.type('text/csv').set('Content-Disposition', `attachment; filename="${path.basename(fileName)}"`).send(ordersCsv(result.orders)) })
 app.get(`${adminPath}/api/orders/stream`, auth, (req,res) => {
   res.status(200).set({ 'Content-Type':'text/event-stream', 'Cache-Control':'no-cache, no-transform', Connection:'keep-alive' })
   res.flushHeaders()
@@ -203,24 +230,19 @@ app.post(`${adminPath}/api/khatta/users`, auth, async (req,res) => {
   try { return res.status(201).json(await createKhattaUser({ name, phone })) } catch (error) { if (error.code === '23505' || error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error:'A Khatta customer with this mobile number already exists' }); throw error }
 })
 app.get(`${adminPath}/api/khatta/users/:id/statement`, auth, async (req,res) => {
-  const statement = await getKhattaStatement(req.params.id)
-  if (!statement) return res.status(404).json({ error:'Khatta customer not found' })
-  const settlementToken = crypto.randomBytes(24).toString('hex')
-  khattaSettlementTokens.set(settlementToken, { userId:String(req.params.id), entryIds:statement.entries.map(entry => String(entry.id)), expiresAt:Date.now() + 10 * 60 * 1000 })
-  res.json({ ...statement, settlementToken })
+  try { const statement = await getKhattaStatement(req.params.id); if (!statement) return res.status(404).json({ error:'Khatta customer not found' }); res.json(statement) } catch (error) { console.error('[khatta-statement]', error.message); res.status(500).json({ error:'Unable to load Khatta statement' }) }
 })
 app.post(`${adminPath}/api/khatta/users/:id/settle`, auth, async (req,res) => {
-  const token = khattaSettlementTokens.get(req.body.settlementToken)
-  if (!token || token.userId !== String(req.params.id) || token.expiresAt < Date.now() || req.body.downloadConfirmed !== true) return res.status(400).json({ error:'Download and confirm the Khatta statement before clearing it' })
   if (!(await verifyAdminPassword(req.body.password))) return res.status(401).json({ error:'Password confirmation failed' })
-  const statement = await settleKhattaUser(req.params.id, token.entryIds)
+  let statement
+  try { statement = await settleKhattaUser(req.params.id, req.body.amount, req.body.note) } catch (error) { return res.status(error.status || 400).json({ error:error.message }) }
   if (!statement) return res.status(404).json({ error:'Khatta customer not found' })
-  if (!statement.entries.length) return res.status(409).json({ error:'This Khatta statement has already been settled' })
-  khattaSettlementTokens.delete(req.body.settlementToken)
-  res.json({ ok:true, total:statement.total, entries:statement.entries.length })
+  res.json({ ok:true, settledAmount:statement.settledAmount, remaining:statement.total })
 })
+app.get(`${adminPath}/api/settings/order-export`, auth, async (req,res) => res.json({ enabled:(await getSetting('order-export-enabled','true')) === 'true', time:await getSetting('order-export-time','23:59'), lastExportAt:await getSetting('last-order-export-at', null) }))
+app.post(`${adminPath}/api/settings/order-export`, auth, async (req,res) => { const time=String(req.body.time || ''); if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return res.status(400).json({ error:'Enter a valid time in 24-hour HH:MM format' }); await setSetting('order-export-enabled', req.body.enabled === false ? 'false' : 'true'); await setSetting('order-export-time', time); await scheduleOrderExport(); res.json({ ok:true, enabled:req.body.enabled !== false, time }) })
 app.get(`${adminPath}/api/menu`, auth, async (req,res) => sendMenuResponse(req, res, 'private, no-cache'))
-app.post(`${adminPath}/api/menu`, auth, async (req,res) => { const { id,name,category,description='',price,available=true }=req.body; if(!id||!name||!category||!Number.isInteger(Number(price))||Number(price)<0)return res.status(400).json({error:'id, name, category and a valid price are required'}); const item=await upsertMenu({id,name,category,description,price:Number(price),available}); invalidateMenuCache(); res.status(201).json(item) })
+app.post(`${adminPath}/api/menu`, auth, async (req,res) => { const { id,name,category,description='',price,available=true }=req.body; const type=String(req.body.type || 'FOOD').toUpperCase(); const normalizedCategory=type === 'CIGARETTES' ? 'Cigarettes' : String(category || '').trim(); if(!id||!name||!['FOOD','CIGARETTES'].includes(type)||!normalizedCategory||!Number.isInteger(Number(price))||Number(price)<0)return res.status(400).json({error:'id, name, type, category and a valid price are required'}); const item=await upsertMenu({id,name,category:normalizedCategory,description,price:Number(price),available}); invalidateMenuCache(); res.status(201).json(item) })
 app.delete(`${adminPath}/api/menu/:id`, auth, async (req,res) => { const deleted=await deleteMenu(req.params.id); invalidateMenuCache(); res.json({ deleted }) })
 
 app.listen(port, () => console.log(`CCB Express API listening on http://localhost:${port}`))

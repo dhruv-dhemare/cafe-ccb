@@ -90,7 +90,24 @@ const getRoute = () =>
       ? "checkout"
       : window.location.pathname === "/success"
         ? "success"
-        : "home";
+        : window.location.pathname === "/privacy"
+          ? "privacy"
+          : window.location.pathname === "/terms"
+            ? "terms"
+            : "home";
+const routeToView = (route) =>
+  ["menu", "cigarettes", "success", "privacy", "terms"].includes(route)
+    ? route
+    : "home";
+const CUSTOMER_PATHS = new Set([
+  "/",
+  "/menu",
+  "/cigarettes",
+  "/checkout",
+  "/success",
+  "/privacy",
+  "/terms",
+]);
 const isCartRoute = () =>
   new URLSearchParams(window.location.search).get("cart") === "1";
 const readStoredReceipt = () => {
@@ -116,15 +133,7 @@ function App() {
     JSON.parse(localStorage.getItem("ccb-cart") || "[]"),
   );
   const initialRoute = getRoute();
-  const [view, setView] = useState(
-      initialRoute === "menu"
-        ? "menu"
-        : initialRoute === "cigarettes"
-          ? "cigarettes"
-        : initialRoute === "success"
-          ? "success"
-          : "home",
-    ),
+  const [view, setView] = useState(routeToView(initialRoute)),
     [showCart, setShowCart] = useState(isCartRoute()),
     [checkout, setCheckout] = useState(initialRoute === "checkout");
   const [phone, setPhone] = useState(""),
@@ -144,20 +153,41 @@ function App() {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
   }, []);
+  useEffect(() => {
+    if (!window.location.pathname.startsWith(ADMIN_PATH) && !CUSTOMER_PATHS.has(window.location.pathname)) {
+      window.history.replaceState({}, "", "/");
+    }
+  }, []);
+  useEffect(() => {
+    const pathname = window.location.pathname;
+    const metadata = pathname.startsWith(ADMIN_PATH)
+      ? { title: "Staff dashboard · Cafe Coffee Bar 3.0", description: "Private staff dashboard for Cafe Coffee Bar 3.0.", robots: "noindex, nofollow" }
+      : pathname === "/menu"
+        ? { title: "Food menu · Cafe Coffee Bar 3.0", description: "Browse the food and beverage menu at Cafe Coffee Bar 3.0 in Katraj, Pune.", robots: "index, follow" }
+        : pathname === "/cigarettes"
+          ? { title: "Cigarette menu · Cafe Coffee Bar 3.0", description: "Browse the cigarette menu at Cafe Coffee Bar 3.0 in Katraj, Pune.", robots: "noindex, nofollow" }
+          : pathname === "/privacy"
+            ? { title: "Privacy policy · Cafe Coffee Bar 3.0", description: "How Cafe Coffee Bar 3.0 uses customer and order information.", robots: "index, follow" }
+            : pathname === "/terms"
+              ? { title: "Terms and conditions · Cafe Coffee Bar 3.0", description: "Terms for ordering food, beverages and cigarettes from Cafe Coffee Bar 3.0.", robots: "index, follow" }
+              : { title: "Cafe Coffee Bar 3.0 · Katraj, Pune", description: "Order freshly made food and beverages from Cafe Coffee Bar 3.0 in Katraj, Pune.", robots: "index, follow" };
+    document.title = metadata.title;
+    for (const [name, content] of Object.entries({ description: metadata.description, robots: metadata.robots })) {
+      let tag = document.head.querySelector(`meta[name="${name}"]`);
+      if (!tag) {
+        tag = document.createElement("meta");
+        tag.name = name;
+        document.head.appendChild(tag);
+      }
+      tag.content = content;
+    }
+  }, [view, checkout]);
   const navigate = (path) => {
     setPaymentOptions(null);
     setPaymentMethod("");
     window.history.pushState({}, "", path);
     const route = getRoute();
-    setView(
-      route === "menu"
-        ? "menu"
-        : route === "cigarettes"
-          ? "cigarettes"
-          : route === "success"
-            ? "success"
-            : "home",
-    );
+    setView(routeToView(route));
     setCheckout(route === "checkout");
     setShowCart(isCartRoute());
     window.scrollTo(0, 0);
@@ -174,15 +204,7 @@ function App() {
   useEffect(() => {
     const onPopState = () => {
       const route = getRoute();
-      setView(
-        route === "menu"
-          ? "menu"
-          : route === "cigarettes"
-            ? "cigarettes"
-            : route === "success"
-              ? "success"
-              : "home",
-      );
+      setView(routeToView(route));
       setCheckout(route === "checkout");
       setShowCart(isCartRoute());
       window.scrollTo(0, 0);
@@ -191,19 +213,32 @@ function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   useEffect(() => {
+    if (view !== "menu" && view !== "cigarettes") {
+      return undefined;
+    }
+    if (menu.length) return undefined;
+    let active = true;
     loadCachedMenu()
-      .then(setMenu)
+      .then((items) => {
+        if (active) setMenu(items);
+      })
       .catch(() => {})
-      .finally(() => setMenuLoading(false));
-  }, []);
+      .finally(() => {
+        if (active) setMenuLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [menu.length, view]);
   useEffect(() => {
+    if (view !== "menu" && view !== "cigarettes") return undefined;
     const onStorage = (event) => {
       if (event.key !== MENU_CACHE_INVALIDATION_KEY) return;
       loadCachedMenu({ force: true }).then(setMenu).catch(() => {});
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [view]);
   useEffect(
     () => localStorage.setItem("ccb-cart", JSON.stringify(cart)),
     [cart],
@@ -371,6 +406,8 @@ function App() {
     }
   };
   if (window.location.pathname.startsWith(ADMIN_PATH)) return <AdminApp />;
+  if (view === "privacy" || view === "terms")
+    return <LegalPage type={view} onHome={() => navigate("/")} />;
   if (view === "success" && receipt)
     return (
       <Success
@@ -575,11 +612,48 @@ function App() {
         >
           Kadam Plaza · Bharati Vidyapeeth · Pune · <br />Get directions ↗
         </a>
+        <span className="legal-links">
+          <a href="/privacy" onClick={(event) => { event.preventDefault(); navigate("/privacy"); }}>Privacy policy</a>
+          <a href="/terms" onClick={(event) => { event.preventDefault(); navigate("/terms"); }}>Terms</a>
+        </span>
         <span>Made for slow mornings & good nights.</span>
       </footer>
       </div>
       {showIntro && <IntroSplash />}
     </>
+  );
+}
+function LegalPage({ type, onHome }) {
+  const privacy = type === "privacy";
+  return (
+    <main className="legal-page">
+      <div className="legal-card">
+        <p className="eyebrow">CAFE COFFEE BAR 3.0 · KATRAJ, PUNE</p>
+        <h1>{privacy ? "Privacy policy" : "Terms and conditions"}</h1>
+        {privacy ? (
+          <>
+            <p>We collect the information needed to accept and serve an order, including your mobile number, selected items, payment status and, for food orders, your table number.</p>
+            <h2>How we use it</h2>
+            <p>We use these details to confirm payment, prepare the order, deliver food to the right table and help staff resolve order issues. We do not sell customer information.</p>
+            <h2>Payments and Khatta</h2>
+            <p>Online payments are processed by Razorpay. We do not ask for or store your card, UPI PIN or banking credentials. Khatta is available only to customers registered by the café owner and is maintained for settlement by the owner.</p>
+            <h2>Retention and contact</h2>
+            <p>Order records are kept for café operations. Khatta entries are cleared by the owner after settlement. For questions or corrections, please speak with the café staff directly.</p>
+          </>
+        ) : (
+          <>
+            <p>Orders are accepted subject to item availability and confirmation by Cafe Coffee Bar 3.0. Please check your cart and table number before submitting.</p>
+            <h2>Payment choices</h2>
+            <p>Online payments are processed through Razorpay. Cash is paid to café staff. Khatta is available only to eligible customers registered by the owner; cigarettes cannot be added to Khatta.</p>
+            <h2>Service and refunds</h2>
+            <p>Your table number helps staff serve food orders. Cigarette orders are not served to a table. Any cancellation, correction or refund is handled by the café and, where applicable, the payment provider.</p>
+            <h2>Responsible use</h2>
+            <p>Cigarette sales remain subject to applicable law and age verification. Staff may decline an order where required.</p>
+          </>
+        )}
+        <button className="text-btn" onClick={onHome}>← Back to home</button>
+      </div>
+    </main>
   );
 }
 function IntroSplash() {
@@ -1003,7 +1077,7 @@ function Success({ receipt, onMenu }) {
     </div>
   );
 }
-const ADMIN_ROUTES = ["order", "cash-order", "menu", "khatta"];
+const ADMIN_ROUTES = ["order", "cash-order", "menu", "khatta", "settings"];
 const readAdminRoute = () => {
   const route = window.location.pathname
     .slice(ADMIN_PATH.length)
@@ -1027,6 +1101,7 @@ function AdminApp() {
     [form, setForm] = useState({
       id: "",
       name: "",
+      type: "FOOD",
       category: "",
       description: "",
       price: "",
@@ -1040,6 +1115,11 @@ function AdminApp() {
     [khattaSearch, setKhattaSearch] = useState(""),
     [khattaMessage, setKhattaMessage] = useState(""),
     [khattaBusy, setKhattaBusy] = useState(null),
+    [khattaLedger, setKhattaLedger] = useState(null),
+    [khattaLedgerLoading, setKhattaLedgerLoading] = useState(null),
+    [khattaDownloadLoading, setKhattaDownloadLoading] = useState(null),
+    [exportSettings, setExportSettings] = useState({ enabled: true, time: "23:59", lastExportAt: null }),
+    [exportMessage, setExportMessage] = useState(""),
     [cashOrderCart, setCashOrderCart] = useState([]),
     [cashOrderSearch, setCashOrderSearch] = useState(""),
     [cashOrderPhone, setCashOrderPhone] = useState(""),
@@ -1082,6 +1162,8 @@ function AdminApp() {
         credentials: "include",
       });
       if (khattaResponse.ok) setKhattaUsers(await khattaResponse.json());
+      const settingsResponse = await fetch(`${adminApi}/settings/order-export`, { credentials: "include" });
+      if (settingsResponse.ok) setExportSettings(await settingsResponse.json());
     } catch {
       setError("Unable to connect to the admin server");
     }
@@ -1128,13 +1210,18 @@ function AdminApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ ...form, price: Number(form.price) }),
+        body: JSON.stringify({
+          ...form,
+          category: form.type === "CIGARETTES" ? "Cigarettes" : form.category.trim(),
+          price: Number(form.price),
+        }),
       });
       if (r.ok) {
         setMessage(editingId ? "Dish updated" : "Dish added");
         setForm({
           id: "",
           name: "",
+          type: "FOOD",
           category: "",
           description: "",
           price: "",
@@ -1150,7 +1237,11 @@ function AdminApp() {
     }
   };
   const editDish = (item) => {
-    setForm({ ...item, price: String(item.price) });
+    setForm({
+      ...item,
+      type: item.category === "Cigarettes" ? "CIGARETTES" : "FOOD",
+      price: String(item.price),
+    });
     setEditingId(item.id);
     setMessage("Editing dish — save when ready");
   };
@@ -1169,6 +1260,7 @@ function AdminApp() {
           setForm({
             id: "",
             name: "",
+            type: "FOOD",
             category: "Cold Beverages",
             description: "",
             price: "",
@@ -1276,41 +1368,44 @@ function AdminApp() {
       setKhattaSaving(false);
     }
   };
+  const downloadKhatta = async (user) => {
+    setKhattaDownloadLoading(user.id);
+    setKhattaMessage("");
+    try {
+      const response = await fetch(`${adminApi}/khatta/users/${user.id}/statement`, { credentials: "include" });
+      const statement = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(statement.error || `Could not load Khatta statement (${response.status})`);
+      const entries = Array.isArray(statement.entries) ? statement.entries : [];
+      const settlements = Array.isArray(statement.settlements) ? statement.settlements : [];
+      const csvCell = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+      const rows = [["Customer", statement.user?.name || user.name], ["Mobile", statement.user?.phone || user.phone], ["Outstanding", statement.total ?? user.balance], [], ["Order", "Date", "Items", "Outstanding"], ...entries.map((entry) => [entry.order_number, new Date(entry.created_at).toLocaleString("en-IN"), (entry.items || []).map((item) => `${item.quantity} x ${item.itemName}`).join("; "), entry.amount]), [], ["Settlement history"], ["Date", "Amount", "Note"], ...settlements.map((entry) => [new Date(entry.created_at).toLocaleString("en-IN"), entry.amount, entry.note || ""])];
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(new Blob([rows.map((row) => row.map(csvCell).join(",")).join("\n")], { type: "text/csv;charset=utf-8" }));
+      link.href = url;
+      link.download = `khatta-${statement.user?.phone || user.phone}-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setKhattaMessage(`${user.name}'s Khatta CSV downloaded`);
+    } catch (error) {
+      setKhattaMessage(error.message || "Could not download Khatta CSV");
+    } finally {
+      setKhattaDownloadLoading(null);
+    }
+  };
+  const viewKhattaLedger = async (user) => {
+    setKhattaMessage("");
+    setKhattaLedgerLoading(user.id);
+    try { const response = await fetch(`${adminApi}/khatta/users/${user.id}/statement`, { credentials: "include" }); const statement = await response.json().catch(() => ({})); if (!response.ok) throw new Error(statement.error || `Could not load ledger (${response.status})`); setKhattaLedger({ ...statement, entries:Array.isArray(statement.entries) ? statement.entries : [], settlements:Array.isArray(statement.settlements) ? statement.settlements : [] }); } catch (error) { setKhattaMessage(error.message); } finally { setKhattaLedgerLoading(null); }
+  };
   const settleKhatta = async (user) => {
     setKhattaBusy(user.id);
     setKhattaMessage("");
     try {
-      const statementResponse = await fetch(
-        `${adminApi}/khatta/users/${user.id}/statement`,
-        { credentials: "include" },
-      );
-      const statement = await statementResponse.json();
-      if (!statementResponse.ok)
-        throw new Error(statement.error || "Could not create statement");
-      const csvCell = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-      const rows = [
-        ["Customer", statement.user.name],
-        ["Mobile", statement.user.phone],
-        ["Total", statement.total],
-        [],
-        ["Order", "Date", "Items", "Amount"],
-        ...statement.entries.map((entry) => [
-          entry.order_number,
-          new Date(entry.created_at).toLocaleString("en-IN"),
-          entry.items
-            .map((item) => `${item.quantity} x ${item.itemName}`)
-            .join("; "),
-          entry.amount,
-        ]),
-      ];
-      const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-      link.download = `khatta-${statement.user.phone}-${new Date().toISOString().slice(0, 10)}.csv`;
-      link.click();
-      URL.revokeObjectURL(link.href);
-      if (!window.confirm("The statement was downloaded. Clear this Khatta balance now?")) return;
-      const password = window.prompt("Re-enter the admin password to clear this Khatta balance:");
+      const amount = window.prompt(`Outstanding balance: ₹${user.balance}. Enter the amount received:`);
+      if (amount === null) return;
+      const password = window.prompt("Re-enter the admin password to record this settlement:");
       if (!password) return;
       const settleResponse = await fetch(
         `${adminApi}/khatta/users/${user.id}/settle`,
@@ -1320,15 +1415,15 @@ function AdminApp() {
           credentials: "include",
           body: JSON.stringify({
             password,
-            settlementToken: statement.settlementToken,
-            downloadConfirmed: true,
+            amount: Number(amount),
           }),
         },
       );
       const result = await settleResponse.json().catch(() => ({}));
       if (!settleResponse.ok) throw new Error(result.error || "Could not clear Khatta balance");
-      setKhattaMessage(`${user.name}'s Khatta balance was cleared`);
       load();
+      if (khattaLedger?.user?.id === user.id) await viewKhattaLedger(user);
+      setKhattaMessage(`${user.name}'s settlement of ₹${result.settledAmount} was recorded`);
     } catch (settleError) {
       setKhattaMessage(settleError.message);
     } finally {
@@ -1377,12 +1472,19 @@ function AdminApp() {
         </div>
       </div>
     );
+  const isToday = (value) => { const date = new Date(value); const now = new Date(); return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate(); };
   const matchesOrderSearch = (order) => {
     const query = orderSearch.trim().toLowerCase();
     return !query || order.order_number.toLowerCase().includes(query) || String(order.table_number || "").toLowerCase().includes(query);
   };
-  const pendingCashOrders = orders.filter((order) => order.payment_status === "CASH");
-  const visibleOrders = orders.filter((order) => order.payment_status !== "CASH" && matchesOrderSearch(order));
+  const saveExportSettings = async (event) => { event.preventDefault(); setExportMessage(""); const response = await fetch(`${adminApi}/settings/order-export`, { method:"POST", headers:{"Content-Type":"application/json"}, credentials:"include", body:JSON.stringify(exportSettings) }); const result = await response.json().catch(() => ({})); if (!response.ok) return setExportMessage(result.error || "Could not save settings"); setExportMessage("Export schedule saved"); };
+  const exportOrdersNow = async () => { const response = await fetch(`${adminApi}/orders/export`, { credentials:"include" }); if (!response.ok) return setExportMessage("Could not export orders"); const blob = await response.blob(); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `orders-${new Date().toISOString().slice(0,10)}.csv`; link.click(); URL.revokeObjectURL(link.href); setExportMessage("Orders exported and downloaded"); load(); };
+  const pendingCashOrders = orders.filter((order) => order.payment_status === "CASH" && isToday(order.createdAt));
+  const visibleOrders = orders.filter((order) => isToday(order.createdAt) && order.payment_status !== "CASH" && matchesOrderSearch(order));
+  const todayOrders = orders.filter((order) => isToday(order.createdAt));
+  const cashCollected = todayOrders.filter((order) => (order.payment_method === "CASH" || (!order.payment_method && order.payment_status === "PAID" && !order.razorpay_payment_id)) && order.payment_status === "PAID").reduce((sum, order) => sum + Number(order.total || 0), 0);
+  const onlineCollected = todayOrders.filter((order) => (order.payment_method === "ONLINE" || (!order.payment_method && Boolean(order.razorpay_payment_id))) && order.payment_status === "PAID").reduce((sum, order) => sum + Number(order.total || 0), 0);
+  const todayRevenue = todayOrders.filter((order) => order.payment_status !== "CASH").reduce((sum, order) => sum + Number(order.total || 0), 0);
   const visibleKhattaUsers = khattaUsers.filter((user) => {
     const query = khattaSearch.trim().toLowerCase();
     return !query || user.name.toLowerCase().includes(query) || user.phone.includes(query);
@@ -1393,6 +1495,12 @@ function AdminApp() {
     const query = cashOrderSearch.trim().toLowerCase();
     return !query || item.name.toLowerCase().includes(query) || item.category.toLowerCase().includes(query);
   });
+  const foodCategories = [...new Set(
+    menu
+      .filter((item) => item.category !== "Cigarettes")
+      .map((item) => item.category)
+      .filter(Boolean),
+  )].sort((a, b) => a.localeCompare(b));
   return (
     <div className="admin-shell">
       <header className="admin-header">
@@ -1412,6 +1520,7 @@ function AdminApp() {
           <button className={adminRoute === "cash-order" ? "active" : ""} onClick={() => navigateAdmin("cash-order")}>Cash order</button>
           <button className={adminRoute === "menu" ? "active" : ""} onClick={() => navigateAdmin("menu")}>Menu</button>
           <button className={adminRoute === "khatta" ? "active" : ""} onClick={() => navigateAdmin("khatta")}>Khatta</button>
+          <button className={adminRoute === "settings" ? "active" : ""} onClick={() => navigateAdmin("settings")}>Settings</button>
         </nav>
         <button
           className="text-btn"
@@ -1444,6 +1553,7 @@ function AdminApp() {
             })}
           </span>
         </div>
+        {adminRoute === "order" && <div className="stats"><div><span>Orders today</span><b>{todayOrders.length}</b></div><div><span>Cash collected</span><b>{money(cashCollected)}</b></div><div><span>Online collected</span><b>{money(onlineCollected)}</b></div><div><span>Today's revenue</span><b>{money(todayRevenue)}</b></div></div>}
         {adminRoute === "order" && (
           <section className="admin-section">
           <section className="admin-section pending-cash-section">
@@ -1492,7 +1602,7 @@ function AdminApp() {
             <div className="admin-section-head">
               <div>
                 <p className="eyebrow">ORDER HISTORY</p>
-                <h2>All orders</h2>
+                <h2>Today's orders</h2>
               </div>
               <span className="active-count">{visibleOrders.length} orders</span>
             </div>
@@ -1675,14 +1785,14 @@ function AdminApp() {
                   <small>+91 {user.phone} · {user.entry_count} open order{Number(user.entry_count) === 1 ? "" : "s"}</small>
                 </div>
                 <strong>{money(user.balance)}</strong>
-                <button className="settle-btn" type="button" onClick={() => settleKhatta(user)} disabled={khattaBusy === user.id || Number(user.balance) === 0}>
-                  {khattaBusy === user.id ? <><Spinner /> Preparing…</> : "Download & settle"}
-                </button>
+                <div className="khatta-actions"><button className="edit-btn" type="button" onClick={() => viewKhattaLedger(user)} disabled={khattaLedgerLoading === user.id}>{khattaLedgerLoading === user.id ? <><Spinner /> Loading…</> : "View ledger"}</button><button className="edit-btn" type="button" onClick={() => downloadKhatta(user)} disabled={khattaDownloadLoading === user.id}>{khattaDownloadLoading === user.id ? <><Spinner /> Downloading…</> : "Download CSV"}</button><button className="settle-btn" type="button" onClick={() => settleKhatta(user)} disabled={khattaBusy === user.id || Number(user.balance) === 0}>{khattaBusy === user.id ? <><Spinner /> Saving…</> : "Record settlement"}</button></div>
               </div>
             )) : <p className="empty-state">{khattaUsers.length ? "No matching customers." : "No Khatta customers yet."}</p>}
           </div>
+          {khattaLedger && <div className="khatta-ledger"><div className="admin-section-head"><h3>{khattaLedger.user.name} · ledger</h3><button className="cancel-edit" type="button" onClick={() => setKhattaLedger(null)}>Close</button></div><p>Outstanding: <b>{money(khattaLedger.total)}</b></p><h4>Open orders</h4>{khattaLedger.entries.length ? khattaLedger.entries.map((entry) => <div className="ledger-line" key={`open-${entry.id}`}><span>{entry.order_number}<small>{new Date(entry.created_at).toLocaleString("en-IN")}</small></span><b>{money(entry.amount)}</b><small>{entry.items.map((item) => `${item.quantity} × ${item.itemName}`).join(", ")}</small></div>) : <p className="empty-state">No open Khatta orders.</p>}<h4>Settlement history</h4>{khattaLedger.settlements.length ? khattaLedger.settlements.map((entry) => <div className="ledger-line" key={`settled-${entry.id}`}><span>{new Date(entry.created_at).toLocaleString("en-IN")}</span><b>{money(entry.amount)}</b><small>{entry.note || "Settlement"}</small></div>) : <p className="empty-state">No settlements recorded yet.</p>}</div>}
         </section>
         )}
+        {adminRoute === "settings" && <section className="admin-section settings-section"><div className="admin-section-head"><div><p className="eyebrow">AUTOMATION</p><h2>Order export</h2></div><span className="active-count">Previous orders only</span></div><p className="settings-copy">The CSV contains only orders dated before today. Today’s orders are never included or deleted. When the owner downloads the CSV, only those previous orders are removed; Khatta data stays separate.</p><form className="settings-card" onSubmit={saveExportSettings}><label className="settings-toggle"><input type="checkbox" checked={exportSettings.enabled} onChange={(e) => setExportSettings({ ...exportSettings, enabled:e.target.checked })} /> Enable daily export</label><label>Export time (24-hour)<input type="time" value={exportSettings.time} onChange={(e) => setExportSettings({ ...exportSettings, time:e.target.value })} required /></label><p className="secure-note">Last export: {exportSettings.lastExportAt ? new Date(exportSettings.lastExportAt).toLocaleString("en-IN") : "Not yet exported"}</p><div className="settings-actions"><button className="gold-btn" type="submit">Save schedule <span>→</span></button><button className="edit-btn" type="button" onClick={exportOrdersNow}>Download & clear previous orders</button></div>{exportMessage && <p className="form-success">{exportMessage}</p>}</form></section>}
         {adminRoute === "menu" && (
         <section className="admin-section menu-editor">
           <div className="admin-section-head">
@@ -1699,6 +1809,7 @@ function AdminApp() {
                   setForm({
                     id: "",
                     name: "",
+                    type: "FOOD",
                     category: "Cold Beverages",
                     description: "",
                     price: "",
@@ -1724,12 +1835,32 @@ function AdminApp() {
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               required
             />
+            <select
+              value={form.type}
+              onChange={(e) => setForm({
+                ...form,
+                type: e.target.value,
+                category: e.target.value === "CIGARETTES" ? "Cigarettes" : "",
+              })}
+              aria-label="Item type"
+              disabled={menuSaving}
+            >
+              <option value="FOOD">Food</option>
+              <option value="CIGARETTES">Cigarettes</option>
+            </select>
             <input
-              placeholder="Category"
-              value={form.category}
+              list="food-category-options"
+              placeholder={form.type === "CIGARETTES" ? "Cigarettes" : "Choose or type category"}
+              value={form.type === "CIGARETTES" ? "Cigarettes" : form.category}
               onChange={(e) => setForm({ ...form, category: e.target.value })}
+              readOnly={form.type === "CIGARETTES"}
               required
             />
+            <datalist id="food-category-options">
+              {foodCategories.map((category) => (
+                <option value={category} key={category} />
+              ))}
+            </datalist>
             <input
               type="number"
               min="0"
